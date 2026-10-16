@@ -1,0 +1,10 @@
+{
+  "name": "websec-assessment-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "网站网络安全评估工具 - 网页版（零依赖 Node 服务 + 共享 UI）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

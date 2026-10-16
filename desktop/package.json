@@ -1,0 +1,55 @@
+{
+  "name": "websec-assessment-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "网站网络安全评估工具 - 桌面版（Electron 壳 + 共享 core 引擎）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron . --disable-gpu",
+    "dist": "electron-builder",
+    "dist:portable": "electron-builder --win portable",
+    "dist:installer": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.websec.site-assessment",
+    "productName": "网站网络安全评估工具",
+    "copyright": "网站网络安全评估工具",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "electronVersion": "31.7.7",
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "../core", "to": "core" },
+      { "from": "../ui", "to": "ui" },
+      { "from": "../docs", "to": "docs" }
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "网站网络安全评估工具-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "网站网络安全评估工具-便携版.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "artifactName": "网站网络安全评估工具-安装版.exe"
+    },
+    "directories": {
+      "output": "../dist"
+    }
+  }
+}

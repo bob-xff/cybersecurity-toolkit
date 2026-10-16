@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="MmLKlFOUVTibwbqaUCqnb1">
+<head data-page-node-id="95UVaIYdE9bpKdmFEUg26I">
+<meta charset="UTF-8" data-page-node-id="or6l7W008Vi4ZaCK4jxXbX">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="CR09wpNuKrWoDFUzWjoBeQ">
+<title>网站网络安全评估工具</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8.5' fill='%23fce7f1'/%3E%3Cg fill='none' stroke='%23db2777' stroke-width='1.4'%3E%3Cellipse cx='16' cy='16' rx='11.4' ry='3.8'/%3E%3Cellipse cx='16' cy='16' rx='11.4' ry='3.8' transform='rotate(60 16 16)'/%3E%3Cellipse cx='16' cy='16' rx='11.4' ry='3.8' transform='rotate(120 16 16)'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='1.85' fill='%23db2777'/%3E%3C/svg%3E" data-page-node-id="640XBNEq19J9AngxfNw3Kg">
+<link rel="stylesheet" href="app.css" data-page-node-id="YB4CT6dhmibvWfsdT1LWtS">
+</head>
+<body data-page-node-id="ciHeObRlt4Tw1RUGteBA9V">
+
+<!-- file:// 直开模式警告（桌面版由 Electron 加载不受影响） -->
+<div id="fileModeBanner" class="file-banner hidden" data-page-node-id="zKkYsBJv262PtXZ49UvUvk">
+  <strong data-page-node-id="Nxg4sqGL8gHr2VuAbMVAQr">⚠ 当前是「文件直开」模式</strong>，评估功能不可用。
+  请运行项目根目录的 <code data-page-node-id="DoR7R80wAU3wNHtQ8obplG">启动网页版.bat</code>（网页版）或 <code data-page-node-id="eayjGApAvz53FI0Ci6MD60">启动桌面版.bat</code>（桌面版）后使用。
+</div>
+
+<header class="topbar" data-page-node-id="53piDVBiX9qCBBCpsl7BzU">
+  <div class="brand" data-page-node-id="DP0C03zJZGuKDUUI2PGs2L">
+    <svg class="logo" viewBox="0 0 32 32" role="img" aria-label="网站网络安全评估工具标志" data-page-node-id="nm6YrRQHdoXpnacDlDiWnW">
+      <rect class="lm-bg" width="32" height="32" rx="8.5" data-page-node-id="uhpzvlaMbwI17X6MqRQzjb"></rect>
+      <g class="lm-orbit" data-page-node-id="0pICqhSwPctlYJ6HC4jp8d">
+        <ellipse cx="16" cy="16" rx="11.4" ry="3.8" data-page-node-id="aeOEFxdSKzy54pa5EGsQE1"></ellipse>
+        <ellipse cx="16" cy="16" rx="11.4" ry="3.8" transform="rotate(60 16 16)" data-page-node-id="pfyPEtZBZzVbkKzdMqafLQ"></ellipse>
+        <ellipse cx="16" cy="16" rx="11.4" ry="3.8" transform="rotate(120 16 16)" data-page-node-id="Y4eREcGpwCyCrWHo7xUkyG"></ellipse>
+      </g>
+      <g class="lm-dots" data-page-node-id="HKPWCxEOvSUBBSrtKAyGPg">
+        <circle cx="27.4" cy="16" r="1.35" data-page-node-id="tOBSWFKMMH9v8gFpoEo8E2"></circle>
+        <circle cx="21.7" cy="25.87" r="1.35" data-page-node-id="mZ48EjYFiSkovrE047U0mS"></circle>
+        <circle cx="10.3" cy="25.87" r="1.35" data-page-node-id="8qZ2EpUguJBZE1hbO5cYsr"></circle>
+      </g>
+      <circle class="lm-core" cx="16" cy="16" r="1.85" data-page-node-id="aCUHsG2SL2ubbAEo8aMiaY"></circle>
+    </svg>
+    <div class="brand-text" data-page-node-id="UAN4h6EnvToirFzpweDSuK">
+      <h1 data-page-node-id="4CouIIk0VU0joSV9BNwBjC">网站网络安全评估工具</h1>
+      <p class="sub" data-page-node-id="oOGD41JmbWfsMvItR4HkJZ">依据国内 / 国际网络安全标准 · 自动化安全评判与整改建议</p>
+    </div>
+  </div>
+  <div class="meta" data-page-node-id="L6eI8r0soc5u7AKmm6ieRI">
+    <span id="platformBadge" class="badge" data-page-node-id="aqKPRryTafGEy7FLhGMhlS">检测中…</span>
+    <span id="versionBadge" class="badge ghost" data-page-node-id="RGL6HS7dutvdIRIv8YJ8oD">v1.0.0</span>
+  </div>
+</header>
+
+<main data-page-node-id="PqQR74sUbHQA7MXeplwAsi">
+
+  <!-- ============ 输入区 ============ -->
+  <section class="card input-card" data-page-node-id="FRAS9cIG2EJ58Mgxw9GfH1">
+    <label class="field-label" for="urlInput" data-page-node-id="lvW4rikKIeb2gyByFF9fBn">目标网站地址</label>
+    <div class="input-row" data-page-node-id="TVLxAZXwJFvyIfxVF7ciCv">
+      <input id="urlInput" type="text" autocomplete="off" spellcheck="false"
+             placeholder="例如 https://www.example.com（不带协议将默认按 https 评估）" data-page-node-id="aAHUJQdF8diXQPdRn2KNqE">
+      <button id="startBtn" class="btn primary" type="button" data-page-node-id="QpqzUwoCuHBDHtHElDKYp4">开始评估</button>
+    </div>
+    <div class="input-hints" data-page-node-id="V1w4nBCLZeOrbXU3OjgkHq">
+      <span class="hint" data-page-node-id="GmA5InR93GSqgp78rC1HCQ">快速示例：</span>
+      <button class="link" type="button" data-sample="https://example.com" data-page-node-id="rAJ3JRgLuEbJwZHVmPcBeL">example.com</button>
+      <button class="link" type="button" data-sample="https://www.qq.com" data-page-node-id="ZWzrtuaVqLOzviabJXjaXV">www.qq.com</button>
+      <button class="link" type="button" data-sample="http://example.com" data-page-node-id="plY2PC4TR2AcWTuiP0luvc">http://example.com</button>
+      <span class="hint danger" data-page-node-id="E52tx30cV9KslOSdeUPAxu">⚠ 仅可评估已获授权的目标，工具只做被动低强度探测</span>
+    </div>
+    <details class="options" data-page-node-id="miRYNN3L7D0x64j6L29MF9">
+      <summary data-page-node-id="kBiNJu071YlZE0F2dQ3YOW">高级选项</summary>
+      <label class="opt" data-page-node-id="kiN9RnoKfrYOcZpOqJ58F0"><input type="checkbox" id="libOpt" checked data-page-node-id="8zTSvW4A0AYTumyJ8x7PxU">
+        <span data-page-node-id="bQiE8oPXcoYkP8IuLumr2Y">前端组件深度检测（抓取页面引用的外部脚本以比对漏洞库，耗时略增）</span></label>
+      <label class="opt" data-page-node-id="Oat4x2A5MKvXeBJjaQxMEM"><input type="checkbox" id="exposureOpt" checked data-page-node-id="sGDZ3YL19zxcIe57OcDzsu">
+        <span data-page-node-id="YJ3kOBx7XJz8MAQ82RimHl">敏感路径暴露面探测（对少量公开路径发起 GET/OPTIONS/TRACE 探测）</span></label>
+    </details>
+  </section>
+
+  <!-- ============ 进度 ============ -->
+  <section id="progressCard" class="card progress-card hidden" data-page-node-id="Gha1TQvvzh3mF3tdGpxecP">
+    <div class="progress-head" data-page-node-id="sh2l3rPWnJxogMJ3Q59Pqt">
+      <div class="spinner" aria-hidden="true" data-page-node-id="bEwwiCn1upF7rxt1ODZgQG"><span data-page-node-id="tGc67UjyL45Ey1Ufwj3DQP"></span><span data-page-node-id="CBj7WnQIOhGW1CH71q107v"></span><span data-page-node-id="1oCOOGMnDocO5EXn40GM35"></span></div>
+      <div class="progress-body" data-page-node-id="uBugA61bAc8u4nqGytUc1u">
+        <div id="progressText" class="progress-text" data-page-node-id="2Br6kJZojRyAHi6B1sKFZ4">准备中…</div>
+        <div id="progressStep" class="sub" data-page-node-id="liK2hU9Os8vhImy3nxTSzI"></div>
+      </div>
+      <div id="progressPct" class="progress-pct" data-page-node-id="zMody1c41hrfRmZxikBitK">0%</div>
+    </div>
+    <div class="pbar-track" data-page-node-id="9ekHKEHVIuTWG4LXLGjULk"><div id="pbarFill" class="pbar-fill" data-page-node-id="ifHceMJW3BRNJ6AFU8rD6z"></div></div>
+    <div id="stepsRail" class="steps-rail" aria-hidden="true" data-page-node-id="agkGbusNN66imKYYBJ3RgD"></div>
+  </section>
+
+  <!-- ============ 错误 ============ -->
+  <section id="errorCard" class="card error-card hidden" data-page-node-id="nQpmtGoePBbbwWzVdwZiqx"></section>
+
+  <!-- ============ 结果 ============ -->
+  <section id="resultArea" class="hidden" data-page-node-id="6IVHkNsEIk7URfHq1gW2az">
+
+    <!-- 总览 -->
+    <div class="card score-hero" data-page-node-id="vCbxPlYxk45ZC0CEQvBh6N">
+      <div class="gauge-wrap" data-page-node-id="cugPnWT6LkXtxHhZE5VITE">
+        <svg class="gauge" viewBox="0 0 140 140" role="img" aria-label="综合评分" data-page-node-id="KenqjerUTUoGo3EonAaeDW">
+          <circle class="gauge-bg" cx="70" cy="70" r="60" data-page-node-id="D8A9GWvdQaHfWAEXZZ5xft"></circle>
+          <circle id="gaugeArc" class="gauge-arc" cx="70" cy="70" r="60" data-page-node-id="f43W2ci0kbHKXU1N80lzQ7"></circle>
+        </svg>
+        <div class="gauge-center" data-page-node-id="Xxs9trefTtRj4vosg3W6dD">
+          <div id="scoreNum" class="score-num" data-page-node-id="Yqvs5DaoYeVsr9Q1XQUTmW">–</div>
+          <div class="score-denom" data-page-node-id="h0FrUVOdvB7kXEzLAiHWIA">/ 100</div>
+        </div>
+      </div>
+      <div class="hero-info" data-page-node-id="Alz9lDu3EFOND3pkF8JaLf">
+        <div class="hero-grade-row" data-page-node-id="6gvlX2VS6P1DzrGzuyU3tX">
+          <span id="gradeBadge" class="grade-badge" data-page-node-id="slbxMqj5JdX1kN1bspz9If">–</span>
+          <span id="gradeLabel" class="grade-label" data-page-node-id="zOneia9P1HFbDDeSMzo5wF"></span>
+        </div>
+        <dl id="targetInfo" class="target-info" data-page-node-id="wYnstlAvY6DNhh5tFKgAU3"></dl>
+        <div class="hero-actions" data-page-node-id="pgzsotUiG8tEHrLXQkRnZs">
+          <button id="exportBtn" class="btn primary" type="button" data-page-node-id="GQoYf6TTrSbq6oPMtXnixs">下载 Markdown 报告</button>
+          <button id="copyBtn" class="btn" type="button" data-page-node-id="5Ln9lratUwMAnivEX0PoXK">复制 Markdown</button>
+          <button id="jsonBtn" class="btn" type="button" data-page-node-id="Gd6Obd9hM4VMwgJoLdveOL">导出 JSON</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 统计磁贴（点击可直接筛选明细） -->
+    <div id="statRow" class="stat-row" data-page-node-id="9sRYkxzOV8DFpsiwgWLukV"></div>
+
+    <!-- 引擎提示 -->
+    <div id="warningsBox" class="card warnings hidden" data-page-node-id="5GSlsWxljn4ziI4II0ropg"></div>
+
+    <!-- 技术栈与探测证据（原始采集结果，供人工复核） -->
+    <div id="techCard" class="card tech-card hidden" data-page-node-id="AAdYEcFQaUJlRaE1y4plbL"></div>
+
+    <!-- 维度得分 -->
+    <h2 class="section-title" data-page-node-id="54kAw7bRlK7NyNx6ylAuDN">维度得分 <span class="sub" data-page-node-id="Mw5Do9TtlaXD1Uij3tWd02">按标准权重加权（T25 / H20 / D15 / E15 / C10 / N10 / P5）</span></h2>
+    <div id="catGrid" class="cat-grid" data-page-node-id="kKh9wZBNEtv2wWdVIXFmZi"></div>
+
+    <!-- 明细 -->
+    <h2 class="section-title" data-page-node-id="J7rXg3fYsvtiAmBmTX6BsY">检查项明细 <span id="findCount" class="sub" data-page-node-id="DZVf2BrAQuIHe1g3S6cqZq"></span></h2>
+    <div class="card filter-card" data-page-node-id="YqD6yYHyvfhv6VK3ZMw33p">
+      <div class="filters" data-page-node-id="CN83DeW0S9b3BfErVsmtvn">
+        <select id="fStatus" aria-label="按状态筛选" data-page-node-id="BALLTViEMp0vhkAvLFc1iA">
+          <option value="" data-page-node-id="qU9xaHMoKkRPU8JQpci5fB">全部状态</option>
+          <option value="fail" data-page-node-id="fgmqaXmFq4G2yf1RAUsQxc">不通过</option>
+          <option value="warn" data-page-node-id="qbTPC2Y6yhw1EdRwkFAnMo">警告</option>
+          <option value="pass" data-page-node-id="1kI47JXNocAOEFoKfvc7mI">通过</option>
+          <option value="na" data-page-node-id="5Me0QEfdiVfFv3Hgu43GyA">不适用</option>
+          <option value="info" data-page-node-id="RobyMpHHRapTQFLFu5BFBm">提示</option>
+        </select>
+        <select id="fCat" aria-label="按维度筛选" data-page-node-id="2gsWuW0NcmMzGfknMvR4Qt"><option value="" data-page-node-id="HAvjgzv90p4EVEPdTyZGMK">全部维度</option></select>
+        <select id="fSev" aria-label="按严重度筛选" data-page-node-id="4RKSvk7MVouhB4JFD1waDZ">
+          <option value="" data-page-node-id="tbHp1js08s3BqrPLMvn7d7">全部严重度</option>
+          <option value="high" data-page-node-id="QRGB50pRrrUGF9f7ysGqtq">高危</option>
+          <option value="medium" data-page-node-id="50hJ1eAYUpAbAeAKKFU2V5">中危</option>
+          <option value="low" data-page-node-id="TbKD3QKPc38wUMHWbKYFQS">低危</option>
+        </select>
+        <input id="fText" type="search" placeholder="搜索编号 / 标题 / 证据…" aria-label="搜索检查项" data-page-node-id="aC1VCIsbDE88FvQXhZP7Q3">
+        <button id="fReset" class="btn small" type="button" data-page-node-id="ZTbKg3ChBwxHjPLzhWT5wl">重置</button>
+      </div>
+    </div>
+    <div id="findList" class="find-list" data-page-node-id="IQ2HKEi6x6pDMAbmsMEGZV"></div>
+
+  </section>
+</main>
+
+<footer class="footer" data-page-node-id="zCBGKyvvqAwPPi2P5mCxl4">
+  <p data-page-node-id="y5QILOIBnEqO9djH38Ce8d">评估依据：《网络安全法》（2025 修正）、《数据安全法》、《个人信息保护法》、GB/T 22239-2019（等保 2.0）、GB/T 35273-2020、GB/T 43698-2024 等国内标准，以及 OWASP Top 10:2021 / ASVS 5.0、ISO/IEC 27001:2022、CIS v8.1、PCI DSS v4.0.1、RFC 系列。</p>
+  <p data-page-node-id="9khAAidk4ju9pLHI6q1KUf">工具仅通过公开渠道做被动 / 低强度探测（读取公开页面与响应头、查询公开 DNS、少量公开路径探测），不注入、不爆破、不触碰内网。完整标准清单见 <code data-page-node-id="BLwAm0Sry0sUB6moPZwEF5">docs/网站网络安全评估标准清单.md</code>。</p>
+</footer>
+
+<div id="toast" class="toast" role="status" aria-live="polite" data-page-node-id="mYmjIwMNi6q8Scn762fSId"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
