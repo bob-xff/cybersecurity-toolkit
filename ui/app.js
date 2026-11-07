@@ -304,7 +304,8 @@
         '<dt>目标网址</dt><dd>' + esc(t.url) + '</dd>' +
         '<dt>最终网址</dt><dd>' + esc(t.finalUrl || t.url) + '</dd>' +
         '<dt>HTTP 状态</dt><dd>' + esc(t.finalStatus == null ? '–' : t.finalStatus) + '（重定向 ' + redirects + ' 次）</dd>' +
-        '<dt>评估耗时</dt><dd>' + fmtDur(r.durationMs) + '</dd>' +
+        '<dt>评估耗时</dt><dd>' + fmtDur(r.durationMs) +
+        ((r.performance && r.performance.probesMs != null) ? '（并行探测 ' + fmtDur(r.performance.probesMs) + '）' : '') + '</dd>' +
         '<dt>评估时间</dt><dd>' + esc(fmtTime(r.startedAt)) + '</dd>';
     }
 
@@ -459,6 +460,10 @@
       chip('TLS', '未启用', 'bad');
     }
     chip('CMS', (tech.cms || []).join('、') || '未识别');
+    chip('前端框架', (tech.frameworks || []).join('、') || '未识别');
+    if (tech.isHtml === false) chip('响应类型', '非 HTML（内容类检查不适用）', 'warn');
+    if (tech.charset && tech.charset !== 'utf-8') chip('页面编码', tech.charset);
+    if (tech.scanLimited) chip('内容分析', '仅覆盖前 256KB', 'warn');
     chip('Generator', tech.generator || '未识别');
     chip('ICP 备案', tech.icp || '未识别', tech.icp ? 'ok' : 'warn');
     chip('引用脚本', tech.scriptCount == null ? '—' : (tech.scriptCount + ' 个'));
@@ -477,6 +482,9 @@
     if (exp && exp.enabled) {
       var hit = (exp.foundFiles || []).length;
       chip('暴露面', hit ? ('命中 ' + hit + ' 条') : '未命中', hit ? 'bad' : 'ok');
+      if (exp.failedRequests) chip('探测失败', exp.failedRequests + ' 个请求', 'warn');
+    } else {
+      chip('暴露面', '已按设置跳过 / 未完成', 'warn');
     }
 
     var html = '<div class="tech-head"><h3>技术栈与探测证据</h3>' +
@@ -522,6 +530,13 @@
       if ((exp.foundFiles || []).length) {
         rows.push(['命中的敏感路径', (exp.foundFiles || []).map(function (f) { return f.path; }).join('、')]);
       }
+    }
+    var perf = r.performance || {};
+    if (perf.probesMs != null) {
+      rows.push(['阶段耗时', '页面 ' + (perf.pageMs == null ? '—' : perf.pageMs + ' ms') +
+        ' ／ 五路并行探测 ' + perf.probesMs + ' ms ／ 检查项 ' + (perf.checksMs == null ? '—' : perf.checksMs + ' ms')]);
+      if (perf.tlsMs != null) rows.push(['其中 TLS 探测', perf.tlsMs + ' ms']);
+      if (perf.exposureMs != null) rows.push(['其中暴露面探测', perf.exposureMs + ' ms']);
     }
     if (rows.length) {
       html += '<details class="tech-more"><summary>展开完整采集明细</summary><dl>' +
@@ -763,15 +778,18 @@
     });
   }
 
-  /* ---------- URL 参数：?url=xxx 预填并自动开始（演示 / 自动化测试用） ---------- */
+  /* ---------- URL 参数：?url=xxx 只预填，不自动开始 ----------
+   * 自动开始会让「别人发一个链接」等同于「本机立刻向该地址发起探测」，
+   * 在网页版监听地址被放宽时风险尤其明显。自动化场景请显式加 &auto=1。 */
   (function () {
-    var u = null;
-    try { u = new URLSearchParams(location.search).get('url'); } catch (e) { /* ignore */ }
-    if (u) {
-      var el = $('#urlInput');
-      if (el) el.value = u;
-      setTimeout(start, 300);
-    }
+    var q = null;
+    try { q = new URLSearchParams(location.search); } catch (e) { return; }
+    var u = q.get('url');
+    if (!u) return;
+    var el = $('#urlInput');
+    if (el) el.value = u;
+    if (q.get('auto') === '1') setTimeout(start, 300);
+    else showToast('已填入目标网址，请确认后点击「开始评估」');
   })();
 
 })();

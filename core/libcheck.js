@@ -19,6 +19,7 @@
 const { rawRequest } = require('./fetcher');
 const { versionLt, mapLimit } = require('./util');
 const { VULN_DB } = require('./vulndb');
+const CONFIG = require('./config');
 
 /** 边界匹配 + 最长库名优先（jquery-ui 先于 jquery，且不误伤 jquerymigrate）
  *  aliasRe / aliasRe2：库的 URL 别名正则（如 angular → angular.min.js / angular-1.8.0.js），
@@ -76,9 +77,12 @@ function detectFromUrl(src) {
 }
 
 function detectFromContent(body) {
+  // 库版本 banner 几乎总在文件头部；只扫前 64KB，避免对 512KB 压缩脚本反复跑全量正则
+  const head = String(body || '').slice(0, CONFIG.limits.maxBannerScan);
   for (const lib of VULN_DB) {
     for (const p of lib.contentPatterns) {
-      const m = p.exec(body);
+      p.lastIndex = 0; // 共享正则对象带 g 标志时复位，避免跨调用的状态污染
+      const m = p.exec(head);
       if (m && m[1]) return { lib: lib.name, version: m[1], via: 'content' };
     }
   }
@@ -103,19 +107,19 @@ function vulnState(version, lib) {
 
 async function checkLibs(scripts, options = {}) {
   // 引擎传 libLimit；maxLibFetch 为兼容旧调用方的别名
-  const max = options.libLimit != null ? options.libLimit : (options.maxLibFetch != null ? options.maxLibFetch : 6);
+  const max = options.libLimit != null ? options.libLimit : (options.maxLibFetch != null ? options.maxLibFetch : CONFIG.limits.maxLibFetch);
   const httpScripts = (scripts || []).filter((s) => s.src && /^https?:/i.test(s.src));
 
-  // 并行抓取脚本内容（并发 3，温和探测）；内容识别优先于 URL 猜测
+  // 并行抓取脚本内容（并发受限，温和探测）；内容识别优先于 URL 猜测
   const fetchTargets = httpScripts.slice(0, Math.max(0, max));
-  const bodies = await mapLimit(fetchTargets, 3, async (s) => {
+  const bodies = await mapLimit(fetchTargets, CONFIG.concurrency.libs, async (s) => {
     try {
-      const r = await rawRequest(s.src, { timeout: 8000, maxBody: 512 * 1024 });
+      const r = await rawRequest(s.src, { timeout: CONFIG.timeouts.lib, maxBody: 512 * 1024 });
       return r.ok ? r.body : null;
     } catch (e) {
       return null;
     }
-  });
+  }, { settle: true });
 
   const out = [];
   const push = (s, detected) => {

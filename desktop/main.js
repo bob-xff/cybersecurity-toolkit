@@ -26,6 +26,7 @@ const UI_DIR = app.isPackaged
   ? path.join(process.resourcesPath, 'ui')
   : path.join(__dirname, '..', 'ui');
 const { assess, TOOL_VERSION } = require(path.join(CORE_DIR, 'index.js'));
+const logger = require(path.join(CORE_DIR, 'logger.js'));
 
 const UI_ENTRY = path.join(UI_DIR, 'index.html');
 
@@ -86,15 +87,21 @@ ipcMain.handle('assess', async (event, url, options) => {
     return { ok: false, error: 'url 参数无效' };
   }
   const o = (options && typeof options === 'object') ? options : {};
-  return assess(url.trim(), {
-    detectLibs: o.detectLibs !== false,
-    detectExposure: o.detectExposure !== false,
-    onProgress: (step, text) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('assess-progress', { step, text });
+  try {
+    return await assess(url.trim(), {
+      detectLibs: o.detectLibs !== false,
+      detectExposure: o.detectExposure !== false,
+      onProgress: (step, text) => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('assess-progress', { step, text });
+        }
       }
-    }
-  });
+    });
+  } catch (e) {
+    // IPC 通道上不允许出现未包装的 reject：渲染层需要统一的可展示错误
+    logger.error('IPC', '评估执行异常', { reason: e && e.message ? e.message : String(e) });
+    return { ok: false, error: '评估执行异常：' + (e && e.message ? e.message : String(e)) };
+  }
 });
 
 ipcMain.handle('save-report', async (event, { name, content }) => {

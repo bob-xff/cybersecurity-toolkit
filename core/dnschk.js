@@ -16,6 +16,25 @@
 
 const dns = require('dns').promises;
 const { rawRequest } = require('./fetcher');
+const CONFIG = require('./config');
+const logger = require('./logger');
+
+/**
+ * 给系统 DNS 查询加超时。c-ares 在某些网络下会长时间不 settle（既不返回也不报错），
+ * 超时后 reject 成 ETIMEDOUT，让 queryRecord 走既有的 DoH 回退通道，而不是把整个评估挂住。
+ */
+function withDeadline(promise, ms) {
+  let timer = null;
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const e = new Error('系统 DNS 查询超时(' + ms + 'ms)');
+      e.code = 'ETIMEDOUT';
+      reject(e);
+    }, ms);
+    // 不 unref：c-ares 卡住时本机可能已无其它活动句柄，兜底定时器必须仍被等待
+  });
+  return Promise.race([promise, guard]).finally(() => { if (timer) clearTimeout(timer); });
+}
 
 /* DoH 端点（JSON 接口）。国内用户优先阿里/腾讯，Google 兜底 */
 const DOH_ENDPOINTS = [
@@ -76,7 +95,7 @@ async function dohQueryAll(name, type) {
   // 并行查询全部端点（任一端点超时/失败不影响其余），合并取并集
   const results = await Promise.all(DOH_ENDPOINTS.map(async (ep) => {
     const r = await rawRequest(ep + '?name=' + encodeURIComponent(name) + '&type=' + type, {
-      timeout: 6000,
+      timeout: CONFIG.timeouts.doh,
       headers: { accept: 'application/dns-json' },
       maxBody: 262144,
     });
@@ -134,7 +153,7 @@ function unquoteTxt(s) {
  */
 async function queryRecord(name, type, sysFn, meta) {
   try {
-    const r = await sysFn(name);
+    const r = await withDeadline(Promise.resolve().then(() => sysFn(name)), CONFIG.timeouts.dns);
     return { state: 'found', records: r };
   } catch (e) {
     const code = e && e.code;
@@ -147,6 +166,7 @@ async function queryRecord(name, type, sysFn, meta) {
       return { state: 'error', records: [], error: code || (e && e.message) || 'DNS 查询失败' };
     }
     if (meta) meta.doh = true;
+    logger.debug('DNS', '系统 DNS 不可用，已回退 DoH', { name: logger.redact(name), type, cause: code || (e && e.message) });
     if (doh.status === 3) return { state: 'none', records: [] }; // NXDOMAIN
     const answers = doh.answers.filter((a) => a.type === TYPE_NUM[type]);
     return { state: answers.length ? 'found' : 'none', records: answers };
@@ -203,7 +223,7 @@ async function queryCaa(name, meta) {
 async function queryDnskey(name, meta) {
   // 系统 DNSKEY；DoH 回退（type=48）
   try {
-    const r = await dns.resolve(name, 'DNSKEY');
+    const r = await withDeadline(dns.resolve(name, 'DNSKEY'), CONFIG.timeouts.dns);
     return { state: r && r.length ? 'found' : 'none', records: r || [] };
   } catch (e) {
     const code = e && e.code;
@@ -250,14 +270,18 @@ async function probeDns(host) {
     queryTxt('_dmarc.' + dom, meta),
     queryMx(dom, meta),
     queryCaa(dom, meta),
-    queryDnskey(host, meta),
+    // DNSKEY 位于区顶点（apex），必须查可注册域；查 www 等子域几乎必然得到"无记录"的假阴性
+    queryDnskey(dom, meta),
   ]);
 
   /* SPF：可注册域优先，无记录时采纳子域自身（少数站点把 SPF 放在 www 等子域） */
+  const tidyTxt = (s) => String(s == null ? '' : s).replace(/^\uFEFF/, '').trimStart();
   const pickSpf = (res, at) => {
     if (res.state !== 'found') return null;
-    const rec = res.records.find((s) => /^v=spf1/i.test(s));
-    if (!rec) return null;
+    // TXT 可能带前导空白或 BOM（部分 DNS 面板/DoH 呈现格式），归一后再识别
+    const raw = res.records.find((s) => /^v=spf1(?:\s|$)/i.test(tidyTxt(s)));
+    if (!raw) return null;
+    const rec = tidyTxt(raw);
     return {
       record: rec.slice(0, 300),
       mechanism: /\s-ALL\s*$/i.test(rec) ? 'hard' : /\s~ALL\s*$/i.test(rec) ? 'soft' : /\s\?ALL\s*$/i.test(rec) ? 'neutral' : 'none',
@@ -280,9 +304,9 @@ async function probeDns(host) {
 
   /* DMARC：_dmarc.<可注册域> */
   if (dmarc.state === 'found') {
-    const rec = dmarc.records.find((s) => /^v=DMARC1/i.test(s));
+    const rec = dmarc.records.map(tidyTxt).find((s) => /^v=DMARC1(?:\s|;|$)/i.test(s));
     if (rec) {
-      const p = /;\s*p\s*=\s*([a-z]+)/i.exec(rec);
+      const p = /(?:^|;)\s*p\s*=\s*([a-z]+)/i.exec(rec);
       out.dmarc = { record: rec.slice(0, 300), policy: p ? p[1].toLowerCase() : 'none', at: '_dmarc.' + dom };
       out.states.dmarc = 'found';
     } else {

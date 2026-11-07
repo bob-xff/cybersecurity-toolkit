@@ -45,6 +45,28 @@ node server.js                # 默认 http://127.0.0.1:8080
 
 浏览器打开 `http://127.0.0.1:8080/`，粘贴目标网址 → 开始评估。
 
+<details>
+<summary>运行配置（可选）：<code>SITESEC_*</code> 环境变量，无需改代码</summary>
+
+所有超时、体积上限与并发数集中在 `core/config.js`，可用环境变量覆盖，弱网 / 内网 / 慢站按需调参：
+
+| 变量 | 默认 | 含义 |
+|---|---|---|
+| `SITESEC_TIMEOUT_PAGE` | 15000 ms | 主页面抓取 |
+| `SITESEC_TIMEOUT_REDIRECT` | 6000 ms | HTTP→HTTPS 跳转探测 |
+| `SITESEC_TIMEOUT_TLS` | 6000 ms | 单次 TLS 握手 |
+| `SITESEC_TIMEOUT_DNS` / `SITESEC_TIMEOUT_DOH` | 5000 / 5000 ms | 系统 DNS / 单个 DoH 端点 |
+| `SITESEC_TIMEOUT_EXPOSURE` / `SITESEC_TIMEOUT_LIB` | 6000 / 6000 ms | 暴露面请求 / 外部脚本 |
+| `SITESEC_LIMIT_MAXBODY` / `SITESEC_LIMIT_MAXDECOMPRESSED` | 1 MB / 4 MB | 压缩后 / 解压后响应体上限（防压缩炸弹） |
+| `SITESEC_LIMIT_MAXREDIRECTS` / `SITESEC_LIMIT_MAXLIBFETCH` | 8 / 6 | 重定向链长度 / 外部脚本抓取数 |
+| `SITESEC_LIMIT_QUEUEWAIT` | 120000 ms | 网页版并发排队最长等待（超时返回 503） |
+| `SITESEC_CONCURRENCY_TLS` / `_EXPOSURE` / `_LIBS` | 4 / 6 / 3 | 三组探测并发度 |
+| `SITESEC_LOG_LEVEL` | `warn` | `silent` / `error` / `warn` / `info` / `debug` |
+
+结构化日志为单行 JSON、写 **stderr**（不污染 NDJSON 进度流与 JSON 报告），并自动剥离 URL 查询串；错误统一走 `core/errors.js` 的错误码模型（`INVALID_URL` / `TIMEOUT` / `BODY_TOO_LARGE` / …）。引擎入口 `core/index.js` 同时导出 `CONFIG`、`logger`、`errors`。
+
+</details>
+
 **桌面版**：
 
 ```bash
@@ -52,8 +74,6 @@ cd desktop
 npm install                   # 安装 Electron（约 100MB+）
 npm start                     # 启动桌面窗口（自动带 --disable-gpu，虚拟机/远程桌面也能开）
 ```
-
-**打包为 exe**：
 
 **打包为 exe（推荐一键脚本）**：
 
@@ -76,7 +96,7 @@ node tools/pack-exe.js --no-mirror       # 不用本地镜像，走 GitHub 在�
 | `网站网络安全评估工具-安装版.exe` | NSIS 安装向导，可选安装目录、创建开始菜单/桌面快捷方式 |
 | `win-unpacked/` | 绿色版目录，免解包直接运行内部 exe |
 
-应用图标由 `tools/make-icon.js` 零依赖生成（`desktop/build/icon.ico` / `icon.png`）：**粉色圆角底 + 玫红「轨道 / 电子」造型**（三条椭圆轨道环绕中心核，三个电子点）。便携版与安装版 exe 均已带此图标；页面顶部 logo 与 favicon 为同一造型的内联 SVG（无外部请求、随主题走）。内层可执行文件出于「不重写 exe 资源」的考虑仍保留 Electron 默认图标，但运行时窗口 / 任务栏图标由 `main.js` 显式指定为同一套图标。
+应用图标由 `tools/make-icon.js` 零依赖生成，v2 造型为**浅粉圆角底 + 深玫瑰「盾牌 + 放大镜」**：盾牌对应安全防护 / 合规基线，放大镜对应检测、审查与发现隐患（而非「已通过」），零渐变、扁平化，16px 任务栏尺寸下仍可辨识。同源几何常量同时输出四份资源：`desktop/build/icon.ico`、`icon.png`、`logo.svg` 与 `ui/logo.svg`。便携版与安装版 exe 均已带此图标；页面顶部 logo 用内联 SVG、favicon 用 `ui/logo.svg`（无外部请求、随主题走）。内层可执行文件出于「不重写 exe 资源」的考虑仍保留 Electron 默认图标，但运行时窗口 / 任务栏图标由 `main.js` 显式指定为同一套图标。
 
 > 打包为**未签名**构建（本地自用场景）。分发给他人时 Windows SmartScreen 会提示「未知发布者」，属正常现象；如需消除提示请自行购买代码签名证书后在 `package.json` 的 `build.win` 中配置 `sign` 或设置 `CSC_LINK` / `CSC_KEY_PASSWORD` 环境变量。
 
@@ -86,7 +106,7 @@ node tools/pack-exe.js --no-mirror       # 不用本地镜像，走 GitHub 在�
 const { assess, buildMarkdown } = require('./core');
 
 assess('https://www.example.com').then((report) => {
-  console.log(report.score, report.level.grade);   // 69.4 'C'（分数随目标实际配置与网络环境变化）
+  console.log(report.score, report.level.grade);   // 例如 69.2 'C'（分数随目标实际配置与网络环境变化）
   console.log(buildMarkdown(report));              // Markdown 报告
 });
 ```
@@ -127,7 +147,9 @@ assess('https://www.example.com').then((report) => {
 
 - 协议 / 弱套件探测受**本机 OpenSSL 策略**限制（如 OpenSSL 3.x 默认禁用 TLS 1.0/1.1 探测），受影响项会标记 `limited` 并在报告中说明，不会伪装成"通过"。
 - DNS 记录（SPF/DMARC/CAA/DNSSEC）查询以系统解析器为准；系统解析不可用时自动回退 DoH（阿里 / 腾讯 / Google，多端点合并取并集），报告中会注明走了 DoH。**查询失败与"确认无记录"严格区分**：前者相关检查项记为"无法检测"，不会误报为"未配置"。
-- DNSSEC 检测依赖解析器是否返回 DNSKEY，无法确认时记为"不适用"。
+- DNSSEC 仅依据区顶点 DNSKEY 是否存在判断，**未验证 DS 信任链与 RRSIG**；查到 DNSKEY 也只给 `info` 提示、不计分，无法确认时记为"不适用"。
+- **「无法检测 / 不适用」≠「通过」**：页面不可达、响应非 HTML、探测被用户关闭或请求失败时，依赖该数据的检查项统一记为 `na` 并从评分分母中剔除，不会伪装成"通过"。这由 `core/standards.js` 的 `prerequisite()` 前置条件守卫统一兜底。
+- 响应体按压缩后 1 MB / 解压后 4 MB 上限截断，正文扫描上限 256 KB、组件特征扫描 64 KB；超限会标记 `scanLimited` 并在报告 6.2 / 6.5 注明，超大页面可能漏检。
 - WAF / CDN 会改变响应头与错误页表现，结果反映的是"边缘节点视角"。
 - 前端组件漏洞库为高频高危库子集（阈值对照公开 CVE 公告），不等同于完整 SCA。
 - 自动化项不能替代人工评估（见标准清单 M1–M20：供应链、备份恢复、应急响应、人员意识等）。
@@ -136,8 +158,11 @@ assess('https://www.example.com').then((report) => {
 
 ```
 ├── docs/          标准清单（V1.0）
-├── core/          评估引擎（util / fetcher / tls / dnschk / content / libcheck / exposure / standards / engine / report）
-├── ui/            共享前端（index.html / app.css / app.js），两个版本复用
+├── core/          评估引擎
+│   ├── config / errors / logger  集中配置 / 统一错误模型 / 结构化日志（横切基础设施）
+│   ├── util / fetcher / tls / dnschk / content / libcheck / exposure   采集模块（内部，勿直接调用）
+│   └── standards / engine / report   标准定义 / 编排评分 / 报告渲染（对外入口为 core/index.js）
+├── ui/            共享前端（index.html / app.css / app.js / logo.svg），两个版本复用
 ├── web/           网页版：server.js（零依赖）+ package.json
 ├── desktop/       桌面版：main.js（Electron 主进程）+ preload.js（contextBridge）+ package.json
 ├── tools/         启动/打包引导器（launch-web.js / launch-desktop.js / pack-exe.js / make-unpacked.js / make-icon.js / bins-mirror.js）
@@ -162,21 +187,31 @@ assess('https://www.example.com').then((report) => {
 | `node test/desktop-ipc-smoke.js` | 桌面版 IPC 参数透传 |
 | `node test/fix-regression-test.js` | 早期 bug 回归 |
 | `node test/round3-fix-test.js` | 重定向、rawRequest 兜底、TXT 归一化、generator 检测顺序、高级选项透传、TLS 端口取值 |
+| `node test/optimization-test.js` | 本轮优化回归（63 项）：URL 边界、字符集 / 压缩炸弹、内容误报漏报、前置条件守卫、暴露面基址、并发容错、错误模型、报告章节 |
+| `node test/ui-mock-server.js` | 确定性罐头报告服务（固定数据 + XSS 转义样本），供无头浏览器做结果态回归 |
+| `node test/bench-compare.js` | 新旧 core 同目标耗时对比（性能基准） |
+| `node test/compare-status.js` | 新旧引擎逐检查项状态 diff（数据兼容性核对） |
 | `bash test/ui-browser-check.sh` | 无头浏览器端到端 UI 检查（logo / 统计磁贴筛选 / 证据卡片 / 高级选项生效） |
 
 ## 7. 界面与报告
 
 **界面**（`ui/`，两个版本共用，粉色系 + 零渐变，简约布局）：
 
+- **品牌与 logo**：v2 盾牌 + 放大镜造型（见第 1 节），favicon、顶栏、图标四份资源同源；语义是「检测发现隐患」而非「已通过」。
+- **信息层级与可读性**：正文基准字号 14.5px，次级文字对比度提升，标题 / 证据 / 说明分层；长中文标签在窄屏不再撑破容器（flex 子项 `min-width:0` + `overflow-x:clip`）。
+- **响应式**：1024 / 720 / 480 三档断点，顶栏、统计磁贴、筛选区、证据卡片逐级重排；另支持 `prefers-contrast: more`。
 - **统计磁贴**：报告输出后顶部给出「不通过 / 警告 / 通过 / 不适用」四块计数，**点按即筛选**对应发现项，再点取消。
 - **步骤导轨**：评估进行时逐段点亮（抓取 → 传输与加密 → 安全响应头 → 内容与代码 → 暴露面 → Cookie → DNS → 隐私合规 → 汇总），进度百分比与导轨同步。
-- **技术栈证据卡片**：把 TLS / 证书、CMS / Generator、ICP、前端组件漏洞库、SPF / DMARC 等**原始证据**可视化（chip + 组件行 + 可展开明细），与报告第六章一致。
-- **无障碍与键盘**：发现项标题为 `<button>`，`Tab` 可聚焦、`Enter` / `Space` 折叠展开；全站 `:focus-visible` 焦点描边；筛选区滚动吸顶。
+- **技术栈证据卡片**：把 TLS / 证书、CMS / Generator、前端框架、ICP、前端组件漏洞库、SPF / DMARC 等**原始证据**可视化（chip + 组件行 + 可展开明细）；同时显示响应类型、页面编码、`scanLimited` 扫描限制与探测失败清单，与报告第六章一致。
+- **无障碍与键盘**：发现项标题为 `<button>`，`Tab` 可聚焦、`Enter` / `Space` 折叠展开；全站 `:focus-visible` 焦点描边 + `skip-link` 跳至主内容 + ARIA 标注 + `<noscript>` 提示；筛选区滚动吸顶。
 - 评分数字滚动动画、结果错落入场、toast 提示等动效均尊重 `prefers-reduced-motion`。
+- **链接预填安全**：`?url=` 只预填输入框，**必须显式带 `&auto=1` 才会自动发起评估**，避免打开一个链接就在本机触发对任意地址的抓取（SSRF）。
 
-**报告**：Markdown 报告新增「**六、技术栈与探测证据**」章节（6.1 TLS 与证书 / 6.2 技术栈与前端组件 / 6.3 DNS 记录 / 6.4 敏感路径暴露面），原「说明与局限」顺延为「七」。**JSON 导出与 Markdown 报告均含采集到的原始证据字段**（此前引擎虽已采集，但未写入报告对象，现已补齐），可逐条溯源、复核。
+**报告**：Markdown 报告含「**六、技术栈与探测证据**」章节（6.1 TLS 与证书 / 6.2 技术栈与前端组件 / 6.3 DNS 记录 / 6.4 敏感路径暴露面 / **6.5 检测范围与耗时**），原「说明与局限」顺延为「七」。6.5 逐段列出页面抓取、五路并行探测、TLS、暴露面、检查项计算与总耗时，便于判断结论置信度与复现性能。**JSON 导出与 Markdown 报告均含采集到的原始证据字段**，可逐条溯源、复核。
 
 **高级选项**：「检测前端组件漏洞库」「检测敏感路径暴露面」两个开关**现已真正生效**——关闭后对应阶段跳过，并在报告中注明「已按用户设置跳过」，避免把"跳过"误读为"通过"。
+
+**检测范围与前置条件**：报告会列出暴露面实际探测过的路径（`checked`）与失败请求（`failedRequests`）；页面不可达 / 非 HTML / 探测未完成时，相关检查项记为「无法检测 / 不适用」且不计入评分。判定规则集中在 `core/standards.js` 的 `prerequisite()`，覆盖依赖页面、内容与暴露面数据的全部检查项。
 
 ## 8. 常见问题
 
@@ -207,7 +242,7 @@ assess('https://www.example.com').then((report) => {
 **Q：服务会一直占着端口吗？**
 不会。服务空闲 30 分钟自动退出；关闭启动窗口（或 Ctrl+C）也会连同子服务一起停止。
 
-## 8. 环境要求
+## 9. 环境要求
 
 - Node.js ≥ 18（开发用 v22 验证）
 - 桌面版额外需要 Electron ≥ 31（npm install 自动处理；免 Node 启动方式除外）

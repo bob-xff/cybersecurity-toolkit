@@ -19,6 +19,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { assess, TOOL_VERSION } = require('../core');
+const CONFIG = require('../core/config');
+const logger = require('../core/logger');
 
 const ROOT = __dirname;
 const UI_DIR = path.join(ROOT, '..', 'ui');
@@ -28,7 +30,7 @@ const DOCS_DIR = path.join(ROOT, '..', 'docs');
 function parseIntArg(name, raw, fallback, min, max) {
   const n = parseInt(raw, 10);
   if (!(n >= min && n <= max)) {
-    console.error('参数 ' + name + ' 无效（' + raw + '），已回退为默认值 ' + fallback);
+    logger.warn('CONFIG', '启动参数无效，已回退默认值', { param: name, value: String(raw), fallback });
     return fallback;
   }
   return n;
@@ -48,7 +50,7 @@ function parseArgs(argv) {
       process.exit(0);
     }
   }
-  if (out.idleExit < 0) { console.error('idle-exit 无效'); process.exit(1); }
+  if (out.idleExit < 0) { logger.error('CONFIG', 'idle-exit 参数无效，服务退出'); process.exit(1); }
   return out;
 }
 const opts = parseArgs(process.argv);
@@ -56,14 +58,24 @@ const opts = parseArgs(process.argv);
 /* ---------- 并发闸门 ---------- */
 let running = 0;
 const waiters = [];
+/** 排队设上限：某个评估异常卡住时，后续请求不能无限期挂起（表现为"点了没反应"） */
 function acquire() {
   if (running < opts.concurrency) { running++; return Promise.resolve(); }
-  return new Promise((resolve) => waiters.push(resolve));
+  return new Promise((resolve, reject) => {
+    const entry = { resolve, timer: null };
+    entry.timer = setTimeout(() => {
+      const i = waiters.indexOf(entry);
+      if (i >= 0) waiters.splice(i, 1);
+      logger.warn('QUEUE', '评估请求排队超时', { waitMs: CONFIG.limits.maxRequestQueueWait, queued: waiters.length });
+      reject(new Error('评估请求排队超时，服务繁忙，请稍后重试'));
+    }, CONFIG.limits.maxRequestQueueWait);
+    waiters.push(entry);
+  });
 }
 function release() {
   running--;
   const next = waiters.shift();
-  if (next) { running++; next(); }
+  if (next) { running++; clearTimeout(next.timer); next.resolve(); }
 }
 
 /* ---------- MIME ---------- */
@@ -153,7 +165,12 @@ async function handleAssess(req, res) {
   const detectLibs = payload.detectLibs === undefined ? true : !!payload.detectLibs;
   const detectExposure = payload.detectExposure === undefined ? true : !!payload.detectExposure;
 
-  await acquire();
+  try {
+    await acquire();
+  } catch (e) {
+    sendJson(res, 503, { error: e.message });
+    return;
+  }
   /* 并发槽必须无泄漏释放：acquire() 之后的任何异常都不能把槽吞掉，
    * 否则累积到 concurrency 次后所有请求会永久排队（表现为服务假死）。 */
   let released = false;
@@ -207,6 +224,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  logger.debug('HTTP', '收到请求', { method: req.method, path: logger.redact(pathname, 120) });
+  if (req.method === 'HEAD' && pathname === '/api/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && (pathname === '/api/health')) {
     sendJson(res, 200, { ok: true, tool: '网站网络安全评估工具', version: TOOL_VERSION, running: running, concurrency: opts.concurrency });
     return;
@@ -236,11 +259,15 @@ const server = http.createServer((req, res) => {
 
 server.listen(opts.port, opts.host, () => {
   const shown = 'http://' + opts.host + ':' + opts.port + '/';
+  /* 以下是面向操作者的 CLI 提示（不是诊断日志），保留 stdout 便于直接运行时看到地址；
+   * 运行期诊断全部走结构化 logger(stderr)，不污染 NDJSON/JSON 输出。 */
   console.log('网站网络安全评估工具（网页版）已启动');
   console.log('  访问地址: ' + shown);
   console.log('  并发上限: ' + opts.concurrency + '，组件检测上限: ' + opts.libLimit);
+  logger.info('SERVER', '服务已启动', { host: opts.host, port: opts.port, concurrency: opts.concurrency });
   if (opts.host !== '127.0.0.1' && opts.host !== 'localhost' && opts.host !== '::1') {
     console.log('  ⚠️ 已绑定非本机地址：请确认已配置访问控制，否则等同于开放 SSRF 入口');
+    logger.warn('SECURITY', '绑定非本机地址，未配置访问控制时等同开放 SSRF 入口', { host: opts.host });
   }
   /* --open：监听成功后自动打开浏览器（仅对本机地址生效） */
   if (opts.open && (opts.host === '127.0.0.1' || opts.host === 'localhost')) {
@@ -254,7 +281,7 @@ server.listen(opts.port, opts.host, () => {
 });
 
 server.on('error', (e) => {
-  console.error('服务启动失败：' + e.message);
+  logger.error('SERVER', '服务启动失败：' + e.message, { code: e.code });
   process.exit(1);
 });
 
@@ -263,7 +290,7 @@ if (opts.idleExit > 0) {
   setInterval(() => {
     if (running > 0) { lastActiveAt = Date.now(); return; } // 有评估在跑就不算空闲
     if (Date.now() - lastActiveAt > opts.idleExit * 60 * 1000) {
-      console.log('已空闲 ' + opts.idleExit + ' 分钟，服务自动退出（防止端口残留）。');
+      logger.info('SERVER', '空闲超时，服务自动退出', { idleMinutes: opts.idleExit });
       process.exit(0);
     }
   }, 60 * 1000).unref();
@@ -271,8 +298,8 @@ if (opts.idleExit > 0) {
 
 /* 最后防线：请求路径均已防护；此处仅兜住未知异常，避免本地工具因单点错误整体退出 */
 process.on('uncaughtException', (e) => {
-  console.error('[uncaughtException] ' + (e && e.stack ? e.stack : e));
+  logger.error('UNCAUGHT', '未捕获异常', { reason: e && e.message ? e.message : String(e) });
 });
 process.on('unhandledRejection', (e) => {
-  console.error('[unhandledRejection] ' + (e && e.stack ? e.stack : e));
+  logger.error('UNHANDLED', '未处理的 Promise 拒绝', { reason: e && e.message ? e.message : String(e) });
 });

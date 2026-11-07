@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="网站安全评估工具">
+  <rect width="64" height="64" rx="14" fill="#F9A8D4"/>
+  <path d="M12.80 10.88 L32.00 8.32 L51.20 10.88 L51.20 32.00 L47.36 43.52 L32.00 55.68 L16.64 43.52 L12.80 32.00 Z" fill="#BE185D"/>
+  <circle cx="29.44" cy="27.52" r="8.64" fill="none" stroke="#FFF7FB" stroke-width="3.07"/>
+  <path d="M35.84 33.92 L42.24 40.32" stroke="#FFF7FB" stroke-width="3.58" stroke-linecap="round"/>
+</svg>

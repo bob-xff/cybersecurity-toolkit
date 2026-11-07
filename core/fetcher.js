@@ -1,81 +1,173 @@
 'use strict';
 
 /**
- * 底层 HTTP 抓取器（零依赖，基于 node:http/https）
- * - 手动跟随重定向并记录链路
- * - 限制响应体大小与超时
- * - 自动解压 gzip/deflate/br
+ * 底层 HTTP 抓取器（零依赖，基于 node:http/https/zlib）
+ *
+ *  - 手动跟随重定向并记录链路，含次数上限与循环检测
+ *  - 限制「压缩后」与「解压后」两道体积上限，防超大页面与压缩炸弹
+ *  - 自动解压 gzip / deflate / br / zstd（按运行时能力）
+ *  - 按 Content-Type 与 <meta charset> 解码（GBK/GB18030/Big5 等），避免中文站点乱码误判
+ *  - 任何路径都 settle：同步构造异常、socket 早退、对端 FIN、超时均有兜底
  */
 const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const { URL } = require('url');
+const { TextDecoder } = require('util');
+const CONFIG = require('./config');
+const { CODES, appError } = require('./errors');
+const logger = require('./logger');
 
 const USER_AGENT = 'Mozilla/5.0 (compatible; SiteSecAudit/1.0; +website-security-assessment)';
-const MAX_BODY = 1024 * 1024; // 1MB
-const DEFAULT_TIMEOUT = 15000;
+const REDIRECT_CODES = [301, 302, 303, 307, 308];
 
-function decodeBody(buf, encoding) {
-  if (!buf || !buf.length) return '';
+/** 只声明运行时真正支持的编码，避免服务端返回解不开的字节流 */
+const CAN_ZSTD = typeof zlib.zstdDecompressSync === 'function';
+const ACCEPT_ENCODING = ['gzip', 'deflate', 'br'].concat(CAN_ZSTD ? ['zstd'] : []).join(', ');
+
+/** 从 Content-Type 与 HTML 头部推断字符集；只在 HTML/XML/文本类上做 meta 推断 */
+function sniffCharset(buf, contentType) {
+  const ct = String(contentType || '').toLowerCase();
+  const fromHeader = /charset\s*=\s*["']?([\w-]+)/.exec(ct);
+  if (fromHeader && fromHeader[1]) return fromHeader[1].toLowerCase();
+  if (!/(html|xml|text\/|javascript|json)/.test(ct)) return 'utf-8';
+  const head = buf.subarray(0, 4096).toString('latin1');
+  const metaCharset = /<meta[^>]+charset\s*=\s*["']?\s*([\w-]+)/i.exec(head)
+    || /<meta[^>]+content\s*=\s*["'][^"']*charset\s*=\s*([\w-]+)/i.exec(head);
+  return metaCharset && metaCharset[1] ? metaCharset[1].toLowerCase() : 'utf-8';
+}
+
+/** 统一解码：优先 TextDecoder（支持非 UTF-8），不支持的编码回退 utf8 并标记 */
+function decodeText(buf, charset) {
+  const cs = String(charset || 'utf-8').toLowerCase();
+  if (cs === 'utf-8' || cs === 'utf8' || cs === 'us-ascii' || cs === 'ascii') {
+    return { text: buf.toString('utf8'), charset: 'utf-8', decoded: true };
+  }
   try {
-    const enc = String(encoding || '').toLowerCase();
-    let b = buf;
-    if (enc.includes('br') && zlib.brotliDecompressSync) b = zlib.brotliDecompressSync(buf);
-    else if (enc.includes('gzip')) b = zlib.gunzipSync(buf);
-    else if (enc.includes('deflate')) {
-      try { b = zlib.inflateSync(buf); } catch (e) { b = zlib.inflateRawSync(buf); }
-    }
-    return b.toString('utf8');
+    const dec = new TextDecoder(cs, { fatal: false });
+    return { text: dec.decode(buf), charset: cs, decoded: true };
   } catch (e) {
-    return buf.toString('utf8');
+    return { text: buf.toString('utf8'), charset: 'utf-8', decoded: false };
   }
 }
 
 /**
- * 单次请求。始终 resolve，不 reject；失败时 { ok:false, error }
+ * 解压 + 解码。返回 { text, charset, truncatedByDecompression, decompressFailed }
+ * maxOutputLength 由 zlib 在解压过程中强制，避免 1MB 压缩包膨胀成数百 MB。
+ */
+function decodeBody(buf, encoding, contentType) {
+  const empty = { text: '', charset: 'utf-8', truncatedByDecompression: false, decompressFailed: false };
+  if (!buf || !buf.length) return empty;
+  const enc = String(encoding || '').toLowerCase();
+  const maxOut = CONFIG.limits.maxDecompressed;
+  let b = buf;
+  let decompressFailed = false;
+  let truncatedByDecompression = false;
+  try {
+    if (enc.includes('br')) {
+      if (!zlib.brotliDecompressSync) throw new Error('运行时不支持 brotli');
+      b = zlib.brotliDecompressSync(buf, { maxOutputLength: maxOut });
+    } else if (enc.includes('gzip') || enc.includes('x-gzip')) {
+      b = zlib.gunzipSync(buf, { maxOutputLength: maxOut });
+    } else if (enc.includes('deflate')) {
+      try { b = zlib.inflateSync(buf, { maxOutputLength: maxOut }); }
+      catch (e) { b = zlib.inflateRawSync(buf, { maxOutputLength: maxOut }); }
+    } else if (enc.includes('zstd')) {
+      if (!CAN_ZSTD) throw new Error('运行时不支持 zstd');
+      b = zlib.zstdDecompressSync(buf, { maxOutputLength: maxOut });
+    }
+  } catch (e) {
+    // ERR_BUFFER_TOO_LARGE：解压后超限，保留原始字节并标记；其余解压失败也按原文处理
+    if (e && (e.code === 'ERR_BUFFER_TOO_LARGE' || /maxOutputLength/i.test(e.message || ''))) {
+      truncatedByDecompression = true;
+    } else {
+      logger.debug('FETCH', '解压失败，按原始字节解码', { encoding: enc, reason: e.message });
+    }
+    decompressFailed = true;
+    b = buf;
+  }
+  const charset = sniffCharset(b, contentType);
+  const decoded = decodeText(b, charset);
+  return {
+    text: decoded.text,
+    charset: decoded.charset,
+    charsetDecoded: decoded.decoded,
+    truncatedByDecompression,
+    decompressFailed,
+  };
+}
+
+/**
+ * 单次请求。始终 resolve，不 reject；失败时 { ok:false, error:{ code, message } }
  */
 function rawRequest(urlStr, options = {}) {
-  const opts = Object.assign(
-    { method: 'GET', timeout: DEFAULT_TIMEOUT, maxBody: MAX_BODY, headers: {}, rejectUnauthorized: true },
-    options
-  );
+  const opts = Object.assign({
+    method: 'GET',
+    timeout: CONFIG.timeouts.page,
+    maxBody: CONFIG.limits.maxBody,
+    headers: {},
+    rejectUnauthorized: true,
+    followRedirect: false,
+  }, options);
+
   return new Promise((resolve) => {
     let settled = false;
     let guard = null;
+    let req = null;
     const done = (v) => {
       if (settled) return;
       settled = true;
       if (guard) clearTimeout(guard);
       resolve(v);
     };
+
+    /* 兜底定时器必须在最前面就位：覆盖 URL 解析、mod.request 同步抛错、
+     * 以及「连接建立了但所有事件都没来」的悬挂场景 */
+    guard = setTimeout(() => {
+      done({
+        ok: false,
+        error: appError(CODES.TIMEOUT, '请求超时(' + (opts.timeout + CONFIG.guardBufferMs) + 'ms 兜底)'),
+        url: urlStr,
+      });
+      try { if (req) req.destroy(); } catch (e) { /* ignore */ }
+    }, opts.timeout + CONFIG.guardBufferMs);
+    // 保持引用：这是防止 Promise 永久悬挂的最后一道保险，不能因无其它句柄而被跳过
+
     let u;
-    try { u = new URL(urlStr); } catch (e) { return done({ ok: false, error: { message: '无效 URL: ' + urlStr } }); }
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-      return done({ ok: false, error: { message: '不支持的协议: ' + u.protocol }, url: urlStr });
+    try { u = new URL(urlStr); }
+    catch (e) {
+      return done({ ok: false, error: appError(CODES.INVALID_URL, '无效 URL: ' + logger.redact(urlStr)), url: urlStr });
     }
-    const mod = u.protocol === 'https:' ? https : http;
-    const req = mod.request(
-      u,
-      {
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      return done({ ok: false, error: appError(CODES.UNSUPPORTED_PROTOCOL, '不支持的协议: ' + u.protocol), url: urlStr });
+    }
+    if (u.username || u.password) {
+      // 不接受内嵌凭据：既不发到对端，也不让凭据进入日志/报告
+      return done({ ok: false, error: appError(CODES.INVALID_URL, 'URL 不允许包含内嵌用户名或密码'), url: urlStr });
+    }
+
+    try {
+      const mod = u.protocol === 'https:' ? https : http;
+      req = mod.request(u, {
         method: opts.method,
-        headers: Object.assign(
-          {
-            'User-Agent': USER_AGENT,
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            Connection: 'close',
-          },
-          opts.headers
-        ),
+        headers: Object.assign({
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Encoding': ACCEPT_ENCODING,
+          Connection: 'close',
+        }, opts.headers),
         timeout: opts.timeout,
         rejectUnauthorized: opts.rejectUnauthorized,
-      },
-      (res) => {
+      }, (res) => {
         const chunks = [];
         let size = 0;
         let truncated = false;
-        const finish = () => {
+        let ended = false;
+        const finish = (forced) => {
+          if (ended) return;
+          ended = true;
           const raw = Buffer.concat(chunks);
+          const dec = decodeBody(raw, res.headers['content-encoding'], res.headers['content-type']);
           done({
             ok: true,
             status: res.statusCode,
@@ -83,90 +175,108 @@ function rawRequest(urlStr, options = {}) {
             headers: res.headers,
             rawHeaders: res.rawHeaders,
             url: u.toString(),
+            contentType: String(res.headers['content-type'] || ''),
+            contentLength: res.headers['content-length'] != null ? Number(res.headers['content-length']) : null,
             bodyRaw: raw,
-            body: decodeBody(raw, res.headers['content-encoding']),
+            body: dec.text,
+            charset: dec.charset,
+            charsetDecoded: dec.charsetDecoded,
             truncated,
+            truncatedByDecompression: dec.truncatedByDecompression,
+            decompressFailed: dec.decompressFailed,
+            incomplete: !!forced,
           });
         };
         res.on('data', (c) => {
-          if (truncated) return;
+          if (truncated || ended) return;
           size += c.length;
           if (size > opts.maxBody) {
-            // 超过大小上限：保留已读部分并标记截断，不得因页面过大判为"不可达"
+            // 保留已读部分并标记截断：页面过大 ≠ 不可达，但内容类结论需标注不完整。
+            // 立即结算，不依赖 req/res 后续事件顺序（destroy 后事件顺序在不同 Node 版本不一致）。
             truncated = true;
-            req.destroy();
+            finish(true);
+            try { req.destroy(); } catch (e) { /* ignore */ }
             return;
           }
           chunks.push(c);
         });
         res.on('error', (err) => {
-          if (truncated) finish();
-          else done({ ok: false, error: { message: err.message, code: err.code }, url: u.toString() });
+          if (truncated) finish(true);
+          else done({ ok: false, error: appError(CODES.FETCH_FAIL, err.message, err), url: u.toString() });
         });
-        res.on('aborted', () => { if (truncated) finish(); });
-        res.on('close', () => { if (truncated) finish(); });
-        res.on('end', finish);
-      }
-    );
-    /* 兜底：任何异常路径都不得让 Promise 悬空——否则整个评估会永久卡住。
-     * 比内建 timeout 多留 2s 作为收尾缓冲；settle 时自动清理。 */
-    guard = setTimeout(() => {
-      done({ ok: false, error: { message: '请求超时(' + (opts.timeout + 2000) + 'ms 兜底)', code: 'ETIMEDOUT' }, url: urlStr });
-      try { req.destroy(); } catch (e) { /* ignore */ }
-    }, opts.timeout + 2000);
-    req.on('error', (err) => done({ ok: false, error: { message: err.message, code: err.code }, url: u.toString() }));
-    req.on('timeout', () => req.destroy(new Error('请求超时(' + opts.timeout + 'ms)')));
-    req.end();
+        res.on('aborted', () => { if (truncated) finish(true); else done({ ok: false, error: appError(CODES.FETCH_FAIL, '响应被对端提前中断'), url: u.toString() }); });
+        res.on('close', () => {
+          if (ended) return;
+          // 正常 end 会先置 ended；走到这里说明连接未完整结束
+          if (truncated) finish(true);
+          else done({ ok: false, error: appError(CODES.FETCH_FAIL, '连接在响应完成前关闭'), url: u.toString() });
+        });
+        res.on('end', () => finish(false));
+      });
+      req.on('error', (err) => done({ ok: false, error: appError(CODES.FETCH_FAIL, err.message, err), url: u.toString() }));
+      req.on('timeout', () => {
+        try { req.destroy(new Error('请求超时(' + opts.timeout + 'ms)')); } catch (e) { /* ignore */ }
+      });
+      req.end();
+    } catch (e) {
+      done({ ok: false, error: appError(CODES.FETCH_FAIL, '请求构造失败：' + e.message, e), url: u.toString() });
+    }
   });
 }
 
 /**
- * 抓取页面并跟随重定向
+ * 抓取页面并跟随重定向。
+ * 返回 { ok, final, finalUrl, chain, redirects, ... }；失败时带 error.code
  */
 async function fetchPage(startUrl, opts = {}) {
-  const maxRedirects = opts.maxRedirects != null ? opts.maxRedirects : 5;
+  const maxRedirects = opts.maxRedirects != null ? opts.maxRedirects : CONFIG.limits.maxRedirects;
+  const timeout = opts.timeout || CONFIG.timeouts.page;
   const chain = [];
+  const visited = new Set();
   let current = startUrl;
+  visited.add(current);
 
   for (let i = 0; ; i++) {
-    const res = await rawRequest(current, { timeout: opts.timeout || 15000, maxBody: opts.maxBody });
+    const res = await rawRequest(current, { timeout, maxBody: opts.maxBody });
     if (!res.ok) {
       return { ok: false, error: res.error, chain, finalUrl: current };
     }
     chain.push({ url: current, status: res.status });
 
     const loc = res.headers.location;
-    const isRedirect = [301, 302, 303, 307, 308].includes(res.status) && !!loc;
-
-    // 非重定向（或 3xx 但无 Location）→ 这就是最终页
+    const isRedirect = REDIRECT_CODES.includes(res.status) && !!loc;
     if (!isRedirect) {
       return { ok: true, final: res, finalUrl: current, chain, redirects: chain.length - 1 };
     }
-    // 重定向预算耗尽：必须显式报错，不能把 3xx 响应当成正常页面返回
     if (i >= maxRedirects) {
       return {
         ok: false,
-        error: { message: '重定向次数过多（>' + maxRedirects + '），已中止跟踪' },
-        chain, finalUrl: current, redirectExceeded: true
+        error: appError(CODES.TOO_MANY_REDIRECTS, '重定向次数过多（>' + maxRedirects + '），已中止跟踪'),
+        chain, finalUrl: current, redirectExceeded: true,
       };
     }
-
     let next;
-    try {
-      next = new URL(loc, current).toString();
-    } catch (e) {
+    try { next = new URL(loc, current).toString(); }
+    catch (e) {
       return { ok: true, redirectBroken: true, final: res, finalUrl: current, chain, redirects: chain.length - 1 };
     }
-    // 重定向成环（同一 URL 再次出现）→ 立即判定，避免耗满预算
-    if (chain.some((c) => c.url === next)) {
+    if (!/^https?:/i.test(next)) {
       return {
         ok: false,
-        error: { message: '检测到重定向循环：' + next },
-        chain, finalUrl: current, redirectLoop: true
+        error: appError(CODES.UNSUPPORTED_PROTOCOL, '重定向到不支持的协议：' + next.split(':')[0]),
+        chain, finalUrl: current,
       };
     }
+    if (visited.has(next)) {
+      return {
+        ok: false,
+        error: appError(CODES.REDIRECT_LOOP, '检测到重定向循环：' + logger.redact(next)),
+        chain, finalUrl: current, redirectLoop: true,
+      };
+    }
+    visited.add(next);
     current = next;
   }
 }
 
-module.exports = { rawRequest, fetchPage, USER_AGENT };
+module.exports = { rawRequest, fetchPage, decodeBody, sniffCharset, USER_AGENT, ACCEPT_ENCODING };

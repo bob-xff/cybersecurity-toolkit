@@ -3,9 +3,16 @@
 /**
  * 暴露面探测：敏感文件、目录列表、security.txt、robots、错误页、HTTP 方法
  * 仅执行少量公开路径 GET/OPTIONS/TRACE 探测，不注入、不爆破。
+ *
+ * 优化：
+ *  - 所有互不依赖的请求统一提交到并发池（此前 9 个串行阶段，慢站最坏耗时 9×timeout）；
+ *  - 保留 checked 全量清单：区分「探测过且未发现」与「根本没探测」，杜绝"没测=通过"；
+ *  - 探测基址取最终 URL 所在目录，兼容部署在子路径的站点。
  */
 const { rawRequest } = require('./fetcher');
-const { mapLimit } = require('./util');
+const { mapLimit, truncate } = require('./util');
+const CONFIG = require('./config');
+const logger = require('./logger');
 const { URL } = require('url');
 
 const SENSITIVE_PATHS = [
@@ -17,18 +24,44 @@ const SENSITIVE_PATHS = [
   { path: '/.DS_Store', label: 'DS_Store 文件', confirm: /Bud1/ },
   { path: '/phpinfo.php', label: 'phpinfo 页面', confirm: /phpinfo\(\)|PHP Version/i },
   { path: '/info.php', label: 'phpinfo 页面', confirm: /phpinfo\(\)|PHP Version/i },
-  // server-status / nginx_status 确认收紧：只认状态页特征串，
-  // 不接受裸关键词（页面正文出现 "nginx"/"Server Version" 一词极易误报）
   { path: '/server-status', label: 'Apache 状态页', confirm: /Apache Server Status/i },
   { path: '/nginx_status', label: 'Nginx 状态页', confirm: /Active connections\s*:\s*\d+/i },
 ];
 
+/** 探测基址：最终 URL 所在目录（去掉文件名与查询串），兼容子路径部署 */
+function probeBaseOf(originUrl) {
+  try {
+    const u = new URL(originUrl);
+    u.hash = '';
+    u.search = '';
+    if (!u.pathname.endsWith('/')) u.pathname = u.pathname.replace(/[^/]*$/, '');
+    return u.toString().replace(/\/$/, '');
+  } catch (e) {
+    return String(originUrl || '').replace(/\/$/, '');
+  }
+}
+
+function confirmPasses(item, body) {
+  if (!item.confirm.test(body)) return false;
+  // .env 追加防护：至少一行「KEY=value」且不含 HTML 标签字符
+  if (item.path === '/.env') {
+    return body.split(/\r?\n/).some((l) => item.confirm.test(l) && !/[<>]/.test(l));
+  }
+  return true;
+}
+
 async function probeExposure(originUrl, options = {}) {
-  const u = new URL(originUrl);
-  const base = u.origin;
-  const timeout = options.timeout || 8000;
+  const timeout = options.timeout || CONFIG.timeouts.exposure;
+  const base = probeBaseOf(originUrl);
+  let origin;
+  try { origin = new URL(base).origin; } catch (e) { origin = base; }
+  const rnd = '/sec-audit-probe-' + Math.random().toString(36).slice(2, 10);
+
   const out = {
-    files: [],
+    base,
+    files: [],       // 仅命中项（保持既有数据契约，standards E2 依赖）
+    checked: [],     // 全量检查清单（含未命中与失败），新增字段
+    failedRequests: 0,
     securityTxt: false,
     securityTxtUrl: null,
     robots: null,
@@ -37,81 +70,110 @@ async function probeExposure(originUrl, options = {}) {
     errorLeak: null,
     trace: null,
     options: null,
+    durationMs: null,
   };
+  const started = Date.now();
 
-  // security.txt（RFC 9116）
-  for (const p of ['/.well-known/security.txt', '/security.txt']) {
-    const r = await rawRequest(base + p, { timeout, maxBody: 65536 });
-    if (r.ok && r.status === 200 && /contact\s*:/i.test(r.body || '')) {
+  /* 把所有请求描述成任务，统一并发执行。
+   * RFC 9116 要求 security.txt 位于站点根，故用 origin；其余用最终 URL 所在目录。 */
+  const tasks = [];
+  const add = (key, url, extra) => tasks.push(Object.assign({ key, url }, extra || {}));
+  add('securityWellKnown', origin + '/.well-known/security.txt');
+  add('securityRoot', origin + '/security.txt');
+  add('robots', origin + '/robots.txt', { maxBody: 131072 });
+  add('sitemap', origin + '/sitemap.xml', { maxBody: 131072 });
+  for (const item of SENSITIVE_PATHS) add('file:' + item.path, base + item.path, { item, maxBody: 131072 });
+  add('root', base + '/', { maxBody: 262144 });
+  add('notFound', base + rnd, { path: rnd, maxBody: 131072 });
+  add('trace', base + '/', { method: 'TRACE', maxBody: 65536 });
+  add('options', base + '/', { method: 'OPTIONS', maxBody: 65536 });
+
+  const results = await mapLimit(tasks, CONFIG.concurrency.exposure, async (t) => {
+    const r = await rawRequest(t.url, {
+      timeout,
+      maxBody: t.maxBody || 65536,
+      method: t.method || 'GET',
+    });
+    return { task: t, res: r };
+  }, { settle: true });
+
+  const byKey = {};
+  // mapLimit 保证结果顺序与 tasks 一致
+  tasks.forEach((t, i) => {
+    const entry = results[i];
+    const r = entry && entry.res && entry.res.ok ? entry.res : null;
+    if (!r) {
+      out.failedRequests++;
+      logger.debug('EXPOSURE', '探测请求失败', {
+        key: t.key,
+        error: entry && entry.res && entry.res.error ? entry.res.error.message : (entry && entry.message) || '未知',
+      });
+    }
+    byKey[t.key] = r;
+  });
+
+  // security.txt（优先 /.well-known/）
+  for (const key of ['securityWellKnown', 'securityRoot']) {
+    const r = byKey[key];
+    if (r && r.status === 200 && /contact\s*:/i.test(r.body || '')) {
       out.securityTxt = true;
-      out.securityTxtUrl = base + p;
+      out.securityTxtUrl = key === 'securityWellKnown' ? origin + '/.well-known/security.txt' : origin + '/security.txt';
       break;
     }
   }
 
   // robots.txt
-  const rob = await rawRequest(base + '/robots.txt', { timeout, maxBody: 131072 });
-  if (rob.ok && rob.status === 200 && /(^|\n)\s*disallow\s*:/i.test(rob.body || '')) {
-    const disallows = (rob.body.match(/^\s*Disallow:\s*(\S+)/gmi) || []).map((s) => s.replace(/^\s*Disallow:\s*/i, '').trim());
+  const rob = byKey['robots'];
+  if (rob && rob.status === 200 && /(^|\n)\s*(?:disallow|allow)\s*:/i.test(rob.body || '')) {
+    const disallows = (rob.body.match(/^\s*Disallow:\s*(\S+)/gmi) || [])
+      .map((s) => s.replace(/^\s*Disallow:\s*/i, '').trim());
     out.robots = {
       disallowAll: disallows.some((d) => d === '/'),
-      // 词边界匹配，避免 latest 误中 test、apiary 误中 api
       sensitive: disallows.filter((d) => /\b(admin|manage|backup|config|internal|test|staging|private|api)\b/i.test(d)),
       count: disallows.length,
     };
-  } else {
-    out.robots = null;
   }
 
-  // sitemap
-  const sm = await rawRequest(base + '/sitemap.xml', { timeout, maxBody: 131072 });
-  out.sitemap = !!(sm.ok && sm.status === 200 && /<urlset|<sitemapindex/i.test(sm.body || ''));
+  // sitemap（只在明确命中标记；请求失败时保持 null，与"确认不存在"区分）
+  const sm = byKey['sitemap'];
+  if (sm && sm.status === 200) out.sitemap = /<urlset|<sitemapindex/i.test(sm.body || '');
 
-  // 敏感文件（并发 3，温和探测）
-  const confirmPasses = (item, body) => {
-    if (!item.confirm.test(body)) return false;
-    // .env 追加防护：至少有一行「KEY=value」命中且该行不含 HTML 标签字符，
-    // 防止压缩 / XHTML 页面里的大写属性（TYPE="text" 之类）被误判为配置文件
-    if (item.path === '/.env') {
-      return body.split(/\r?\n/).some((l) => item.confirm.test(l) && !/[<>]/.test(l));
-    }
-    return true;
-  };
-  const files = await mapLimit(SENSITIVE_PATHS, 3, async (item) => {
-    const r = await rawRequest(base + item.path, { timeout, maxBody: 131072 });
-    if (!r.ok) return { ...item, found: false, status: null };
-    const body = r.body || '';
-    const found = r.status === 200 && body.length > 0 && (item.confirm ? confirmPasses(item, body) : true);
-    return { ...item, found, status: r.status };
-  });
-  out.files = files.filter((f) => f.found);
+  // 敏感文件：checked 保留全量，files 只留命中
+  for (const item of SENSITIVE_PATHS) {
+    const r = byKey['file:' + item.path];
+    const found = !!(r && r.status === 200 && r.body && r.body.length > 0 && confirmPasses(item, r.body));
+    const row = { path: item.path, label: item.label, found, status: r ? r.status : null };
+    out.checked.push(row);
+    if (found) out.files.push(Object.assign({}, row, { sample: truncate(r.body, 120) }));
+  }
 
   // 根目录列表
-  const root = await rawRequest(base + '/', { timeout, maxBody: 262144 });
-  if (root.ok && (/Index of\s+\//i.test(root.body || '') || /<title>\s*Index of/i.test(root.body || ''))) {
+  const root = byKey['root'];
+  if (root && /Index of\s+\/|<title>\s*Index of|<h1>\s*Index of|Parent Directory<\/a>/i.test(root.body || '')) {
     out.dirListing = { path: '/', status: root.status };
   }
 
   // 404/500 错误页泄露
-  const rnd = '/sec-audit-probe-' + Math.random().toString(36).slice(2, 10);
-  const nf = await rawRequest(base + rnd, { timeout, maxBody: 131072 });
-  if (nf.ok && [400, 404, 500, 503].includes(nf.status)) {
+  const nf = byKey['notFound'];
+  if (nf && [400, 404, 500, 502, 503].includes(nf.status)) {
     const body = nf.body || '';
-    const leak = /Traceback \(most recent call last\)|Stack trace|\bat\s+[\w$.]+\s*\(.*?:\d+:\d+\)|SQL syntax|Warning:.*on line|Fatal error|Exception in thread|未捕获异常/i.test(body);
-    if (leak) {
-      out.errorLeak = { path: rnd, status: nf.status, sample: body.slice(0, 200) };
-    }
+    const leak = /Traceback \(most recent call last\)|Stack trace|\bat\s+[\w$.]+\s*\(.*?:\d+:\d+\)|SQL syntax|Warning:.*on line|Fatal error|Exception in thread|未捕获异常|Microsoft OLE DB Provider|org\.springframework/i.test(body);
+    if (leak) out.errorLeak = { path: rnd, status: nf.status, sample: truncate(body, 200) };
   }
 
-  // TRACE（XST 风险）
-  const tr = await rawRequest(base + '/', { method: 'TRACE', timeout, maxBody: 65536 });
-  out.trace = tr.ok ? { status: tr.status, enabled: tr.status === 200 && /trace/i.test(tr.body || '') } : { status: null, enabled: false };
+  // TRACE（XST 风险）：要求有回显，避免把「200 空响应」误判为已启用
+  const tr = byKey['trace'];
+  out.trace = tr
+    ? { status: tr.status, enabled: tr.status === 200 && /TRACE|HTTP\/1\.[01]|\bHost\s*:/i.test(tr.body || '') }
+    : { status: null, enabled: false };
 
   // OPTIONS
-  const op = await rawRequest(base + '/', { method: 'OPTIONS', timeout, maxBody: 65536 });
-  out.options = op.ok ? { status: op.status, allow: op.headers.allow || op.headers['access-control-allow-methods'] || null } : null;
+  const op = byKey['options'];
+  out.options = op ? { status: op.status, allow: op.headers.allow || op.headers['access-control-allow-methods'] || null } : null;
 
+  out.durationMs = Date.now() - started;
+  logger.debug('EXPOSURE', '探测完成', { base: logger.redact(base), durationMs: out.durationMs, failed: out.failedRequests });
   return out;
 }
 
-module.exports = { probeExposure, SENSITIVE_PATHS };
+module.exports = { probeExposure, SENSITIVE_PATHS, probeBaseOf };

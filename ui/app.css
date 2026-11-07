@@ -12,8 +12,9 @@
   --border: #f2d7e4;
   --border-strong: #e6bcd0;
   --text: #47293b;
-  --text-2: #a07e94;
-  --text-3: #7c5064;
+  /* 次级文字加深：原 #a07e94 在白底约 3.4:1，小字号可读性不足 */
+  --text-2: #835c74;
+  --text-3: #6d4459;
 
   --primary: #db2777;
   --primary-hover: #be185d;
@@ -40,13 +41,13 @@ html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font: 14.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 main { max-width: 1080px; margin: 0 auto; padding: 20px 20px 8px; }
 h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
 h2.section-title { font-size: 16px; margin: 28px 0 12px; }
-.sub { color: var(--text-2); font-size: 12.5px; font-weight: 400; }
+.sub { color: var(--text-2); font-size: 13px; font-weight: 400; }
 .hidden { display: none !important; }
 code { background: var(--bg-soft); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
 
@@ -77,9 +78,10 @@ code { background: var(--bg-soft); border-radius: 4px; padding: 1px 5px; font-si
   border-radius: 11px;
   transition: transform .32s var(--ease-spring), border-color .2s ease;
 }
+/* 盾牌 + 放大镜：与 tools/make-icon.js 生成的 icon.png / logo.svg 完全一致 */
 .logo .lm-bg { fill: var(--primary-soft); }
-.logo .lm-orbit ellipse { fill: none; stroke: var(--primary); stroke-width: 1.4; }
-.logo .lm-dots circle, .logo .lm-core { fill: var(--primary); }
+.logo .lm-shield { fill: var(--primary-hover); }
+.logo .lm-lens, .logo .lm-handle { stroke: #fff7fb; }
 .brand:hover .logo { transform: rotate(-8deg) scale(1.07); border-color: var(--border-strong); }
 .brand-text .sub { margin: 2px 0 0; }
 .meta { display: flex; gap: 8px; }
@@ -452,6 +454,112 @@ pre.detail {
 .grade-badge.g-D { background: var(--orange); }
 .grade-badge.g-E { background: var(--red); }
 .grade-badge.g-N { background: var(--text-2); }
+
+/* ============================================================
+ * 优化补充：信息层级 / 交互清晰度 / 可读性 / 响应式（2026-11）
+ * 放在末尾统一覆盖，避免散落修改影响既有组件。
+ * ============================================================ */
+
+/* ---- 无障碍辅助 ---- */
+.sr-only {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 1000;
+  background: var(--primary); color: #fff; padding: 9px 16px;
+  border-radius: 0 0 var(--radius-sm) 0; font-weight: 600;
+}
+.skip-link:focus { left: 0; }
+
+/* ---- 信息层级 ---- */
+h2.section-title {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px;
+  margin: 30px 0 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 16.5px; letter-spacing: .2px;
+}
+h2.section-title .sub { font-size: 12.5px; }
+#statsHeading { margin-top: 20px; }
+.opt-note { margin: 10px 0 0; font-size: 12.5px; color: var(--text-2); }
+.options summary { list-style-position: inside; font-weight: 600; }
+.options summary::marker { color: var(--primary); }
+
+/* ---- 交互清晰度 ---- */
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+.stat { cursor: pointer; }
+.stat:focus-visible, .link:focus-visible, summary:focus-visible { outline-offset: 3px; }
+input[type="checkbox"]:focus-visible { outline-offset: 3px; }
+.find-head[aria-expanded="true"] { background: #fdf6fa; }
+.tech-chip { transition: transform .18s ease, box-shadow .18s ease; }
+.tech-chip:hover { box-shadow: var(--shadow-1); }
+
+/* ---- 可读性 ---- */
+.target-info dd, .tech-card, .warnings, .find-list, .lib-row, .error-card {
+  overflow-wrap: anywhere;
+}
+/* flex / grid 子项默认 min-width:auto，长中文副标题会把顶栏撑破并造成整页横向溢出。
+ * 显式归零后由 wrap 与 overflow-wrap 接管，窄屏才真正能收拢。 */
+.brand, .brand-text, .hero-info, .progress-body, .find-title,
+.filters > *, .stat, .tech-chip, .input-hints > * { min-width: 0; }
+.brand-text .sub { overflow-wrap: anywhere; }
+html, body { overflow-x: clip; }
+.find-evidence, .find-detail { line-height: 1.7; }
+.footer p { line-height: 1.75; }
+.score-num, .stat .s-num, .progress-pct { font-variant-numeric: tabular-nums; }
+
+/* ---- 响应式：三档断点 ---- */
+@media (max-width: 1024px) {
+  main { padding: 18px 18px 8px; }
+  .score-hero { gap: 20px; }
+  .cat-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+}
+@media (max-width: 720px) {
+  .topbar { padding: 12px 14px; }
+  main { padding: 14px 12px 8px; }
+  .input-row { flex-direction: column; }
+  .input-row .btn { width: 100%; }
+  .score-hero { flex-direction: column; align-items: stretch; text-align: center; gap: 14px; }
+  .hero-grade-row { justify-content: center; }
+  .target-info { text-align: left; }
+  .hero-actions { justify-content: center; }
+  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filters > select, .filters > .btn { flex: 1 1 130px; }
+  .filters input[type="search"] { flex: 1 1 100%; min-width: 0; }
+  .filter-card { position: static; }
+  .find-title { min-width: 0; }
+  /* 720 以下就收起副标题 / 按钮独占一行：无头浏览器常把 390 钳到 ~500，
+   * 只写在 480 断点里会漏掉这一档，实测会横向溢出。 */
+  .brand-text .sub { display: none; }
+  .hero-actions .btn { flex: 1 1 100%; }
+  .input-hints .hint.danger { flex: 1 1 100%; margin-left: 0; }
+  .target-info dd { overflow-wrap: anywhere; }
+  h2.section-title { margin-top: 22px; }
+  .footer { padding: 16px 14px; }
+}
+@media (max-width: 480px) {
+  body { font-size: 14px; }
+  .topbar { gap: 10px; }
+  .brand { gap: 9px; }
+  .brand-text h1 { font-size: 16px; }
+  .brand-text .sub { display: none; }   /* 窄屏收起副标题，保住标题与徽标 */
+  .logo { width: 34px; height: 34px; border-radius: 9px; }
+  .card { padding: 14px; }
+  .stat-row { gap: 8px; }
+  .stat .s-num { font-size: 20px; }
+  .hero-actions .btn { flex: 1 1 100%; }
+  .find-head { flex-wrap: wrap; }
+  .gauge-wrap, .gauge { width: 140px; height: 140px; }
+  .footer { font-size: 12px; }
+}
+
+/* 高对比度偏好：加粗描边，不改变配色体系 */
+@media (prefers-contrast: more) {
+  .card, .btn, .filters select, .filters input { border-color: var(--text-3); }
+  .sub, .hint { color: var(--text); }
+}
 
 /* 无障碍：减少动态效果（同时保证无头截图稳定） */
 @media (prefers-reduced-motion: reduce) {

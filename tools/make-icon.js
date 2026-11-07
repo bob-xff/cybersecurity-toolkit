@@ -2,14 +2,21 @@
 'use strict';
 
 /**
- * 生成应用图标（零依赖：手写 PNG 编码 + ICO 封装）
+ * 生成应用图标（零依赖：手写 PNG 编码 + ICO 封装 + SVG）
  *
- * 设计：简约 · 淡粉 · 无渐变 —— 圆角方形浅粉底 + 深玫瑰色「轨道 / 电子」标志。
- * （沿用 Electron 默认图标「原子轨道」的构图，整体改造为粉色系。）
+ * 设计说明（v2，2026-11）：
+ *   旧版是 Electron 默认「原子轨道」图标的粉色改色。轨道/电子与安全评估没有关系，
+ *   属于历史遗留构图。本版改为与工具定位直接对应的符号：
+ *     · 盾牌   → 安全防护 / 合规基线
+ *     · 放大镜 → 检测、审查、发现隐患（而不是「已通过」）
+ *   配色沿用项目淡粉基调：浅粉圆角底 + 深玫瑰盾 + 近白放大镜，零渐变、扁平化，
+ *   在 16px 任务栏图标下仍可辨识。
  *
  * 输出：
- *   desktop/build/icon.png  512×512
- *   desktop/build/icon.ico  16/32/48/64/128/256（PNG 载荷）
+ *   desktop/build/icon.png   512×512
+ *   desktop/build/icon.ico   16/32/48/64/128/256（PNG 载荷）
+ *   desktop/build/logo.svg   矢量源文件（与 UI 内联 SVG 同一套几何常量）
+ *   ui/logo.svg              共享前端使用的同一矢量文件
  *
  * electron-builder 会优先读取 build/icon.ico，其次 build/icon.png。
  *
@@ -21,13 +28,21 @@ const path = require('path');
 const zlib = require('zlib');
 
 const OUT_DIR = path.resolve(__dirname, '..', 'desktop', 'build');
+const UI_DIR = path.resolve(__dirname, '..', 'ui');
 
-/* ---------- 配色（RGB） ---------- */
-const C_BG = [249, 168, 212];    // #F9A8D4 浅粉
-const C_MARK = [190, 24, 93];    // #BE185D 深玫瑰（轨道 / 核 / 电子）
+/* ---------- 配色 ---------- */
+const C_BG = [249, 168, 212];     // #F9A8D4 浅粉
+const C_MARK = [190, 24, 93];     // #BE185D 深玫瑰（盾）
+const C_PAPER = [255, 247, 251];  // #FFF7FB 近白（放大镜）
 
-/* ---------- 几何工具 ---------- */
-/** 圆角方形命中判定 */
+/* ---------- 几何常量（归一化到 size，PNG 与 SVG 同源） ---------- */
+const SHIELD = [
+  [0.20, 0.17], [0.50, 0.13], [0.80, 0.17], [0.80, 0.50],
+  [0.74, 0.68], [0.50, 0.87], [0.26, 0.68], [0.20, 0.50],
+];
+const LENS = { cx: 0.46, cy: 0.43, r: 0.135, w: 0.024 };  // w = 圆环线半宽
+const HANDLE = { x1: 0.56, y1: 0.53, x2: 0.66, y2: 0.63, w: 0.028 };
+
 function inRoundRect(x, y, size, radius) {
   const r = radius;
   if (x >= r && x <= size - r) return y >= 0 && y <= size;
@@ -39,57 +54,42 @@ function inRoundRect(x, y, size, radius) {
   return dx * dx + dy * dy <= r * r;
 }
 
-/** 点到「旋转椭圆轮廓」的近似带符号距离（负=内侧，0=线上）
- *  在半轴端点处精确，中间区段为视觉可接受的一阶近似。 */
-function ellipseRingDist(x, y, cx, cy, a, b, theta) {
-  const dx = x - cx;
-  const dy = y - cy;
-  const ct = Math.cos(theta);
-  const st = Math.sin(theta);
-  const u = dx * ct + dy * st;   // 旋转 -theta
-  const v = -dx * st + dy * ct;
-  const f = (u * u) / (a * a) + (v * v) / (b * b);
-  const rl = Math.sqrt(u * u + v * v) || 1e-9;
-  return (Math.sqrt(f) - 1) * rl;
+function segDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const denom = dx * dx + dy * dy || 1e-9;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / denom));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** 点是否在多边形内（射线法）。盾形用多边形而非椭圆，边界更利落 */
+function inPolygon(x, y, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i][0], yi = pts[i][1];
+    const xj = pts[j][0], yj = pts[j][1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
 }
 
 function inCircle(x, y, cx, cy, r) {
-  const dx = x - cx;
-  const dy = y - cy;
+  const dx = x - cx, dy = y - cy;
   return dx * dx + dy * dy <= r * r;
 }
 
 /* ---------- 单像素采样（返回 RGBA） ---------- */
-/* 构图（按 size 归一化）：
- *   三条约 0° / 60° / 120° 的椭圆轨道 + 中心核 + 三条轨道远端的电子点 */
-const ORBITS = [0, Math.PI / 3, (2 * Math.PI) / 3];
-
 function sample(x, y, size) {
   if (!inRoundRect(x, y, size, size * 0.22)) return [0, 0, 0, 0];
+  const nx = x / size, ny = y / size;
 
-  const cx = size / 2;
-  const cy = size / 2;
-  const a = size * 0.355;          // 轨道长半轴
-  const b = size * 0.118;          // 轨道短半轴
-  const halfW = size * 0.022;      // 轨道线半宽
-  const rNucleus = size * 0.058;   // 中心核半径
-  const rDot = size * 0.042;       // 电子点半径
-
-  // 中心核优先（盖住轨道交叉处的杂乱）
-  if (inCircle(x, y, cx, cy, rNucleus)) return [...C_MARK, 255];
-
-  // 电子点
-  for (const th of ORBITS) {
-    const px = cx + a * Math.cos(th);
-    const py = cy + a * Math.sin(th);
-    if (inCircle(x, y, px, py, rDot)) return [...C_MARK, 255];
+  if (inPolygon(nx, ny, SHIELD)) {
+    const d = Math.hypot(nx - LENS.cx, ny - LENS.cy);
+    // 放大镜圆环
+    if (Math.abs(d - LENS.r) <= LENS.w) return [...C_PAPER, 255];
+    // 放大镜手柄（线段 + 圆头）
+    if (segDist(nx, ny, HANDLE.x1, HANDLE.y1, HANDLE.x2, HANDLE.y2) <= HANDLE.w) return [...C_PAPER, 255];
+    return [...C_MARK, 255];
   }
-
-  // 轨道线
-  for (const th of ORBITS) {
-    if (Math.abs(ellipseRingDist(x, y, cx, cy, a, b, th)) <= halfW) return [...C_MARK, 255];
-  }
-
   return [...C_BG, 255];
 }
 
@@ -190,8 +190,28 @@ function encodeIco(entries) {
   return Buffer.concat([header, dir, ...blobs]);
 }
 
+/* ---------- SVG（与 PNG 共用 SHIELD / LENS / HANDLE 常量） ---------- */
+function buildSvg() {
+  const pts = SHIELD.map(([x, y]) => (x * 64).toFixed(2) + ' ' + (y * 64).toFixed(2)).join(' L');
+  const cx = (LENS.cx * 64).toFixed(2), cy = (LENS.cy * 64).toFixed(2);
+  const r = (LENS.r * 64).toFixed(2), lensW = (LENS.w * 2 * 64).toFixed(2);
+  const hx1 = (HANDLE.x1 * 64).toFixed(2), hy1 = (HANDLE.y1 * 64).toFixed(2);
+  const hx2 = (HANDLE.x2 * 64).toFixed(2), hy2 = (HANDLE.y2 * 64).toFixed(2);
+  const handleW = (HANDLE.w * 2 * 64).toFixed(2);
+  return [
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="网站安全评估工具">',
+    '  <rect width="64" height="64" rx="14" fill="#F9A8D4"/>',
+    '  <path d="M' + pts + ' Z" fill="#BE185D"/>',
+    '  <circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="#FFF7FB" stroke-width="' + lensW + '"/>',
+    '  <path d="M' + hx1 + ' ' + hy1 + ' L' + hx2 + ' ' + hy2 + '" stroke="#FFF7FB" stroke-width="' + handleW + '" stroke-linecap="round"/>',
+    '</svg>',
+    '',
+  ].join('\n');
+}
+
 /* ---------- 主流程 ---------- */
 fs.mkdirSync(OUT_DIR, { recursive: true });
+fs.mkdirSync(UI_DIR, { recursive: true });
 
 const sizes = [256, 128, 64, 48, 32, 16];
 const rendered = new Map();
@@ -203,7 +223,12 @@ fs.writeFileSync(path.join(OUT_DIR, 'icon.png'), png512);
 const ico = encodeIco(sizes.map((s) => ({ size: s, png: encodePng(s, rendered.get(s)) })));
 fs.writeFileSync(path.join(OUT_DIR, 'icon.ico'), ico);
 
+const svg = buildSvg();
+fs.writeFileSync(path.join(OUT_DIR, 'logo.svg'), svg);
+fs.writeFileSync(path.join(UI_DIR, 'logo.svg'), svg);
+
 process.stdout.write(
   `[make-icon] icon.png 512×512 (${png512.length} B)\n` +
-  `[make-icon] icon.ico ${sizes.join('/')} (${ico.length} B)\n`
+  `[make-icon] icon.ico ${sizes.join('/')} (${ico.length} B)\n` +
+  `[make-icon] logo.svg → desktop/build/ 与 ui/\n`
 );

@@ -123,6 +123,8 @@ const CHECKS = [
     intl: ['RFC 6797', 'OWASP Top 10:2021 A02', 'OWASP ASVS V14.4'],
     remediation: '添加 Strict-Transport-Security: max-age=31536000; includeSubDomains，验证无问题后可加入 preload 清单。',
     evaluate(ctx) {
+      // HSTS 仅在 HTTPS 下生效；纯 HTTP 站点的风险已由 T1 判定，此处不重复扣分
+      if (ctx.page && ctx.page.ok && !isHttpsPage(ctx)) return na('站点为纯 HTTP 访问，HSTS 不适用（风险已由 T1 覆盖）');
       const v = hdr(ctx, 'strict-transport-security');
       if (!v) return fail('未配置 Strict-Transport-Security（HSTS）');
       const m = /max-age\s*=\s*(\d+)/i.exec(v);
@@ -506,7 +508,8 @@ const CHECKS = [
     evaluate(ctx) {
       const parts = [];
       if (ctx.content.generator) parts.push('generator: ' + ctx.content.generator);
-      if (ctx.content.cms && ctx.content.cms.length) parts.push('指纹: ' + ctx.content.cms.join('/'));
+      const stacks = [].concat(ctx.content.cms || [], ctx.content.frameworks || []);
+      if (stacks.length) parts.push('指纹: ' + stacks.join('/'));
       if (parts.length) return warn('识别到 CMS / 框架信息（' + parts.join('，') + '），版本暴露会增加被定向利用风险');
       return pass('未发现明显 CMS 指纹');
     },
@@ -643,9 +646,11 @@ const CHECKS = [
     evaluate(ctx) {
       const d = ctx.dns && ctx.dns.dnssec;
       const st = ctx.dns && ctx.dns.states && ctx.dns.states.dnssec;
-      if (d === true) return pass('检测到 DNSSEC 签名（DNSKEY 存在）');
+      // DNSKEY 存在 ≠ 信任链已验证（还需 DS 记录与 RRSIG 校验）。
+      // 原结论直接给 pass 属于过度承诺，改为不计分的提示，并在文案里写明局限。
+      if (d === true) return info('区顶点检测到 DNSKEY 记录（仅说明存在签名密钥，未验证 DS 信任链与 RRSIG，建议用 DNSViz 复核）');
       if (d === null) return na('DNSSEC 无法检测（DNSKEY 查询失败：' + (st === 'error' ? '系统 DNS 与 DoH 均不可用' : '解析器不支持') + '）');
-      return warn('未检测到 DNSSEC 签名');
+      return warn('区顶点未检测到 DNSKEY 记录（可能未启用 DNSSEC，也可能解析器未返回，建议复核）');
     },
   },
   {
@@ -685,9 +690,12 @@ const CHECKS = [
       if (ctx.content && ctx.content.icp) return pass('检测到 ICP 备案号：' + ctx.content.icp);
       // 中文站点判定看整个正文（备案号常在页脚，20KB 切片会漏）
       const body = ctx.page && ctx.page.ok ? ctx.page.final.body : '';
-      const isChineseSite = ctx.hostname.endsWith('.cn') || /[\u4e00-\u9fa5]/.test(body);
-      if (isChineseSite) return fail('未在页面中检测到 ICP 备案号（境内网站依法需备案并公示）');
-      return na('非中文站点，ICP 备案不适用');
+      // 「正文含任一汉字」过于宽松：多语言站点、中文内容页、GBK 乱码都会命中，
+      // 会给境外站点凭空扣一项合规分。只按域名归属或明确的备案语境判定。
+      const cnDomain = /\.cn$/i.test(ctx.hostname) || /\.中国$/i.test(ctx.hostname);
+      const filingContext = /\bICP\s*备|备案号|工业和信息化部|工信部备案/i.test(body);
+      if (cnDomain || filingContext) return fail('未在页面中检测到 ICP 备案号（境内网站依法需备案并公示）');
+      return na('非中国大陆站点且页面无备案语境，ICP 备案不适用');
     },
   },
   {
@@ -709,4 +717,54 @@ const CHECKS = [
   },
 ];
 
-module.exports = { CHECKS, CATEGORIES, SEV_WEIGHT, parseCookies, parseCsp, hostMatch };
+/* ---------------- 前置条件统一守卫 ----------------
+ * 核心原则：**「没测到」绝不能写成「通过」或「不通过」**。
+ * 此前页面抓取失败时，响应头/正文类检查项会把 null 当成「未配置」而大量误报 fail；
+ * 暴露面探测被关闭或整体失败时，E2–E7 会直接落到 pass。这里集中拦截，
+ * 避免在 43 个检查项里逐个写同样的判断（新增检查项也只需登记到集合中）。
+ *
+ * 不计入评分的 na 与「确认无此问题」的 pass 在报告中语义不同，务必保留这一区分。
+ */
+const PAGE_DEPENDENT = new Set([
+  'T2', 'T3', 'T9',
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8',
+  'C1', 'C2', 'C3', 'C4',
+  'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7',
+  'E1', 'P1', 'P2',
+]);
+const CONTENT_DEPENDENT = new Set(['T9', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'P1', 'P2']);
+const EXPOSURE_DEPENDENT = new Set(['E2', 'E3', 'E4', 'E5', 'E6', 'E7']);
+
+function prerequisite(ctx, id) {
+  if (PAGE_DEPENDENT.has(id) && (!ctx.page || !ctx.page.ok)) {
+    return na('页面不可达，该项无法检测（不计入评分）');
+  }
+  if (CONTENT_DEPENDENT.has(id) && ctx.page && ctx.page.ok && ctx.content && ctx.content.isHtml === false) {
+    return na('响应并非 HTML 文档，内容类检查不适用');
+  }
+  if (EXPOSURE_DEPENDENT.has(id)) {
+    if (!ctx.exposure) {
+      return na(ctx.exposureDisabled ? '已按设置关闭暴露面探测，本项不适用' : '暴露面探测未完成，无法判定');
+    }
+    const total = Array.isArray(ctx.exposure.checked) ? ctx.exposure.checked.length : 0;
+    // 文件探测全部失败 ≠ 没有敏感文件
+    if (total > 0 && ctx.exposure.failedRequests >= total) {
+      return na('暴露面探测请求全部失败，无法判定（不计入评分）');
+    }
+  }
+  return null;
+}
+
+for (const check of CHECKS) {
+  const original = check.evaluate;
+  check.evaluate = function guardedEvaluate(ctx) {
+    const blocked = prerequisite(ctx, check.id);
+    if (blocked) return blocked;
+    return original(ctx);
+  };
+}
+
+module.exports = {
+  CHECKS, CATEGORIES, SEV_WEIGHT, parseCookies, parseCsp, hostMatch,
+  PAGE_DEPENDENT, CONTENT_DEPENDENT, EXPOSURE_DEPENDENT, prerequisite,
+};

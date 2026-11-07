@@ -199,9 +199,12 @@ function buildMarkdown(r) {
     push('### 6.2 技术栈与前端组件');
     push('');
     push('- CMS 指纹：' + ((tech.cms || []).join('、') || '未识别'));
+    push('- 前端框架：' + ((tech.frameworks || []).join('、') || '未识别'));
     push('- Generator：' + (tech.generator ? line(tech.generator) : '未识别'));
     push('- ICP 备案：' + (tech.icp ? line(tech.icp) : '未识别'));
     push('- 页面引用脚本数：' + (tech.scriptCount == null ? '—' : tech.scriptCount));
+    push('- 响应类型：' + (tech.isHtml === false ? '非 HTML 文档（内容类检查已标记不适用）' : 'HTML 文档') +
+      '；字符集：' + cell(tech.charset || 'utf-8') + (tech.scanLimited ? '；内容分析仅覆盖前 ' + (256 * 1024) + ' 字节' : ''));
     push('');
     if (libs.length) {
       push('| 组件 | 版本 | 判定 | 严重度 | 漏洞 / 备注 | 识别方式 |');
@@ -246,7 +249,8 @@ function buildMarkdown(r) {
     if (exp && exp.enabled) {
       push('### 6.4 暴露面探测明细');
       push('');
-      push('- 已探测公开路径：' + (exp.checkedFiles || 0) + ' 条；命中敏感内容：' + ((exp.foundFiles || []).length) + ' 条');
+      push('- 已探测公开路径：' + (exp.checkedFiles || 0) + ' 条；命中敏感内容：' + ((exp.foundFiles || []).length) + ' 条' +
+        (exp.failedRequests ? '；失败请求：' + exp.failedRequests + ' 条（相关结论可能不完整）' : ''));
       if ((exp.foundFiles || []).length) {
         push('');
         for (const f of exp.foundFiles) {
@@ -258,6 +262,22 @@ function buildMarkdown(r) {
       push('- sitemap：' + (exp.sitemap == null ? '未获取 / 不存在' : '已获取'));
       push('');
     }
+
+    // 检测范围与耗时：便于判断本次结论的置信度与复现性能
+    const perf = r.performance || {};
+    if (perf.pageMs != null || perf.probesMs != null) {
+      push('### 6.5 检测范围与耗时');
+      push('');
+      push('| 阶段 | 耗时 |');
+      push('|---|---|');
+      push('| 页面抓取（含重定向） | ' + (perf.pageMs == null ? '—' : perf.pageMs + ' ms') + ' |');
+      push('| 五路并行探测 | ' + (perf.probesMs == null ? '—' : perf.probesMs + ' ms') + ' |');
+      push('| 其中 TLS 探测 | ' + (perf.tlsMs == null ? '—' : perf.tlsMs + ' ms') + ' |');
+      push('| 其中暴露面探测 | ' + (perf.exposureMs == null ? '—' : perf.exposureMs + ' ms') + ' |');
+      push('| 检查项计算 | ' + (perf.checksMs == null ? '—' : perf.checksMs + ' ms') + ' |');
+      push('| 总计 | ' + (r.durationMs == null ? '—' : r.durationMs + ' ms') + ' |');
+      push('');
+    }
   }
 
   // 局限
@@ -266,7 +286,9 @@ function buildMarkdown(r) {
   push('1. 本评估基于外部可见面（公开页面抓取、响应头、DNS、少量公开路径探测），不覆盖代码层、内网、业务逻辑与运维配置；');
   push('2. TLS 协议/套件探测受本地 OpenSSL 版本限制，关键结论建议以 testssl.sh / SSL Labs 交叉验证；');
   push('3. 前端组件漏洞库为高频高危库子集，不等同于完整 SCA；');
-  push('4. 本结论不构成等级保护测评、渗透测试或合规认证结论。');
+  push('4. **「无法检测 / 不适用」与「通过」严格区分**：页面不可达、响应非 HTML、探测被关闭或请求失败时，相关检查项记为「无法检测」且不计入评分，不代表站点不存在该问题；');
+  push('5. DNSSEC 仅依据区顶点 DNSKEY 是否存在判断，未验证 DS 信任链与 RRSIG；');
+  push('6. 本结论不构成等级保护测评、渗透测试或合规认证结论。');
   push('');
 
   return L.join('\n');
